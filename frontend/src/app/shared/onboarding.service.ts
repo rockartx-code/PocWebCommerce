@@ -52,6 +52,15 @@ export interface TenantUserResponse {
   support: string;
 }
 
+export interface SubscriptionCheckoutResponse {
+  tenantId: string;
+  subscriptionId: string;
+  planId: string;
+  checkoutPreference: { id: string; type: string; provider: string };
+  status: string;
+  nextBillingAt?: string;
+}
+
 @Injectable({ providedIn: 'root' })
 export class OnboardingService {
   constructor(private http: HttpClient) {}
@@ -62,5 +71,9 @@ export class OnboardingService {
 
   createTenantUser(tenantId: string, payload: TenantUserPayload) {
     return this.http.post<TenantUserResponse>(API_ROUTES.tenantUsers(tenantId), payload);
+  }
+
+  createSubscriptionCheckout(tenantId: string, payload: { planId: string }) {
+    return this.http.post<SubscriptionCheckoutResponse>(API_ROUTES.subscriptionCheckout(tenantId), payload);
   }
 }
