@@ -32,6 +32,10 @@ Resources:
           Required: true
           Mutable: true
           AttributeDataType: String
+        - Name: tenantId
+          Required: true
+          Mutable: true
+          AttributeDataType: String
 
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
@@ -45,6 +49,12 @@ Resources:
       LogoutURLs: !Ref LogoutUrls
       SupportedIdentityProviders: [COGNITO]
       GenerateSecret: false
+      ReadAttributes:
+        - email
+        - custom:tenantId
+      WriteAttributes:
+        - email
+        - custom:tenantId
 
   UserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain

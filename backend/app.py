@@ -7,14 +7,14 @@ from typing import Any, Callable, Dict, Iterable, Tuple
 
 Headers = Dict[str, str]
 LambdaResponse = Tuple[int, Dict[str, Any], Headers]
-Route = Tuple[str, re.Pattern[str], Callable[[Dict[str, Any], Dict[str, str]], LambdaResponse]]
+Route = Tuple[str, re.Pattern[str], Callable[[Dict[str, Any], Dict[str, str]], LambdaResponse], bool]
 
 
 def build_response(status_code: int, body: Dict[str, Any], extra_headers: Headers | None = None) -> Dict[str, Any]:
     headers = {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Authorization,Content-Type",
+        "Access-Control-Allow-Headers": "Authorization,Content-Type,X-Tenant-Id",
         "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     }
     if extra_headers:
@@ -144,14 +144,32 @@ def get_sales_analytics(_: Dict[str, Any], __: Dict[str, str]) -> LambdaResponse
     return 200, metrics, {}
 
 
+def extract_tenant_id(event: Dict[str, Any]) -> str | None:
+    authorizer = (event.get("requestContext") or {}).get("authorizer") or {}
+    claims = authorizer.get("claims") or {}
+    tenant_id = claims.get("custom:tenantId") or claims.get("tenantId")
+    if not tenant_id:
+        return None
+    return str(tenant_id)
+
+
+def inject_tenant(event: Dict[str, Any], params: Dict[str, str]) -> Tuple[str | None, Dict[str, Any], Dict[str, str]]:
+    tenant_id = extract_tenant_id(event)
+    if not tenant_id:
+        return None, event, params
+    event_with_tenant = {**event, "tenantId": tenant_id}
+    params_with_tenant = {**params, "tenantId": tenant_id}
+    return tenant_id, event_with_tenant, params_with_tenant
+
+
 ROUTES: Iterable[Route] = (
-    ("GET", re.compile(r"^/v1/products$"), get_products),
-    ("GET", re.compile(r"^/v1/products/(?P<productId>[^/]+)$"), get_product_by_id),
-    ("POST", re.compile(r"^/v1/cart$"), create_cart),
-    ("GET", re.compile(r"^/v1/cart$"), get_cart),
-    ("POST", re.compile(r"^/v1/orders$"), create_order),
-    ("POST", re.compile(r"^/v1/webhooks/mercadopago$"), handle_mercadopago_webhook),
-    ("GET", re.compile(r"^/v1/analytics/sales$"), get_sales_analytics),
+    ("GET", re.compile(r"^/v1/products$"), get_products, True),
+    ("GET", re.compile(r"^/v1/products/(?P<productId>[^/]+)$"), get_product_by_id, True),
+    ("POST", re.compile(r"^/v1/cart$"), create_cart, True),
+    ("GET", re.compile(r"^/v1/cart$"), get_cart, True),
+    ("POST", re.compile(r"^/v1/orders$"), create_order, True),
+    ("POST", re.compile(r"^/v1/webhooks/mercadopago$"), handle_mercadopago_webhook, False),
+    ("GET", re.compile(r"^/v1/analytics/sales$"), get_sales_analytics, True),
 )
 
 
@@ -159,13 +177,17 @@ def route_event(event: Dict[str, Any]) -> Dict[str, Any]:
     path = event.get("path", "")
     http_method = event.get("httpMethod", "")
 
-    for method, pattern, handler in ROUTES:
+    for method, pattern, handler, requires_tenant in ROUTES:
         if http_method != method:
             continue
         match = pattern.match(path)
         if not match:
             continue
         params = match.groupdict()
+        if requires_tenant:
+            tenant_id, event, params = inject_tenant(event, params)
+            if not tenant_id:
+                return build_response(401, {"message": "Missing tenantId claim"})
         status_code, payload, headers = handler(event, params)
         return build_response(status_code, payload, headers)
 
