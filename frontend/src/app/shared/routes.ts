@@ -6,7 +6,8 @@ export const API_ROUTES = {
   cart: (tenantId: string) => `/v1/${tenantId}/cart`,
   orders: (tenantId: string) => `/v1/${tenantId}/orders`,
   analytics: (tenantId: string) => `/v1/${tenantId}/analytics/sales`,
-  mercadopagoWebhook: (tenantId: string) => `/v1/${tenantId}/webhooks/mercadopago`
+  mercadopagoWebhook: (tenantId: string) => `/v1/${tenantId}/webhooks/mercadopago`,
+  adminUsage: '/v1/admin/tenants/usage'
 };
 
 export const ROUTES_REQUIRING_TENANT = new Set([

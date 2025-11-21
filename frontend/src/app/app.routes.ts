@@ -6,6 +6,7 @@ import { CartComponent } from './features/cart/cart.component';
 import { AnalyticsDashboardComponent } from './features/analytics/analytics-dashboard.component';
 import { AuthPanelComponent } from './features/auth/auth-panel.component';
 import { AdminDashboardComponent } from './features/admin/admin-dashboard.component';
+import { SuperAdminDashboardComponent } from './features/admin/super-admin-dashboard.component';
 import { enforceTenantIsolationGuard } from './features/admin/admin-tenant.guard';
 import { OnboardingWizardComponent } from './features/wizard/onboarding-wizard.component';
 import { ensureTenantGuard } from './shared/tenant.guard';
@@ -19,5 +20,6 @@ export const appRoutes: Routes = [
   { path: 'analytics', component: AnalyticsDashboardComponent },
   { path: 'auth', component: AuthPanelComponent },
   { path: 'admin', component: AdminDashboardComponent, canActivate: [ensureTenantGuard, enforceTenantIsolationGuard] },
+  { path: 'super-admin', component: SuperAdminDashboardComponent },
   { path: '**', redirectTo: '' }
 ];

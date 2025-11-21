@@ -38,6 +38,26 @@ def parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
 
+def extract_claims(event: Dict[str, Any]) -> Dict[str, Any]:
+    request_context = event.get("requestContext") or {}
+    authorizer = request_context.get("authorizer") or {}
+    return authorizer.get("claims") or {}
+
+
+def is_super_admin(event: Dict[str, Any]) -> bool:
+    claims = extract_claims(event)
+    role_claim = claims.get("role") or claims.get("custom:role") or claims.get("cognito:groups")
+    if not role_claim:
+        return False
+    if isinstance(role_claim, str):
+        normalized = {part.strip().lower() for part in re.split(r"[,\s]", role_claim) if part.strip()}
+        return "super-admin" in normalized or "super_admin" in normalized
+    if isinstance(role_claim, Iterable):
+        normalized = {str(item).strip().lower() for item in role_claim}
+        return "super-admin" in normalized or "super_admin" in normalized
+    return False
+
+
 def record_usage_event(
     event: Dict[str, Any],
     tenant_id: str,
@@ -250,6 +270,68 @@ def get_sales_analytics(_: Dict[str, Any], params: Dict[str, str]) -> LambdaResp
     return 200, metrics, {}
 
 
+def list_tenant_usage(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
+    if not is_super_admin(event):
+        return 403, {"message": "Super admin role required"}, {}
+
+    params = event.get("queryStringParameters") or {}
+    start_date = params.get("startDate")
+    end_date = params.get("endDate")
+    requested_metrics = params.get("metrics")
+
+    try:
+        start_date_obj = datetime.fromisoformat(start_date).date() if start_date else None
+        end_date_obj = datetime.fromisoformat(end_date).date() if end_date else None
+    except ValueError:
+        return 400, {"message": "Invalid date format. Use YYYY-MM-DD."}, {}
+
+    page = max(1, int(params.get("page", 1) or 1))
+    page_size = min(100, max(1, int(params.get("pageSize", 20) or 20)))
+    allowed_metrics = ["requests", "orders", "gmv", "bytes"]
+    metrics = [m for m in (requested_metrics or "").split(",") if m in allowed_metrics] or allowed_metrics
+
+    filtered_records = []
+    for record in tracker.get_aggregates():
+        period_date = datetime.fromisoformat(record.period).date()
+        if start_date_obj and period_date < start_date_obj:
+            continue
+        if end_date_obj and period_date > end_date_obj:
+            continue
+        filtered_records.append(record)
+
+    filtered_records.sort(key=lambda rec: (rec.period, rec.tenantId), reverse=True)
+    total = len(filtered_records)
+
+    start_index = (page - 1) * page_size
+    paginated = filtered_records[start_index : start_index + page_size]
+
+    summary = {metric: 0.0 for metric in metrics}
+    items = []
+    for record in paginated:
+        usage_slice = {metric: float(record.usage.get(metric, 0)) for metric in metrics}
+        for metric, value in usage_slice.items():
+            summary[metric] += value
+        items.append(
+            {
+                "tenantId": record.tenantId,
+                "period": record.period,
+                "usage": usage_slice,
+                "createdAt": record.createdAt,
+            }
+        )
+
+    body = {
+        "items": items,
+        "page": page,
+        "pageSize": page_size,
+        "total": total,
+        "availableMetrics": metrics,
+        "summary": summary,
+        "filters": {"startDate": start_date, "endDate": end_date},
+    }
+    return 200, body, {}
+
+
 def extract_tenant_id(event: Dict[str, Any]) -> str | None:
     authorizer = (event.get("requestContext") or {}).get("authorizer") or {}
     claims = authorizer.get("claims") or {}
@@ -284,6 +366,7 @@ ROUTES: Iterable[Route] = (
     ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/orders$"), create_order, True),
     ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/webhooks/mercadopago$"), handle_mercadopago_webhook, False),
     ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/analytics/sales$"), get_sales_analytics, True),
+    ("GET", re.compile(r"^/v1/admin/tenants/usage$"), list_tenant_usage, False),
 )
 
 
