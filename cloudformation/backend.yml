@@ -24,10 +24,31 @@ Resources:
       AttributeDefinitions:
         - AttributeName: productId
           AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: slug
+          AttributeType: S
       KeySchema:
         - AttributeName: productId
           KeyType: HASH
       TableName: !Sub '${AWS::StackName}-products'
+      GlobalSecondaryIndexes:
+        - IndexName: CategoryIndex
+          KeySchema:
+            - AttributeName: category
+              KeyType: HASH
+            - AttributeName: status
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: SlugIndex
+          KeySchema:
+            - AttributeName: slug
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
 
   OrdersTable:
     Type: AWS::DynamoDB::Table
@@ -36,12 +57,37 @@ Resources:
       AttributeDefinitions:
         - AttributeName: orderId
           AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+        - AttributeName: updatedAt
+          AttributeType: S
       KeySchema:
         - AttributeName: orderId
           KeyType: HASH
       TableName: !Sub '${AWS::StackName}-orders'
       StreamSpecification:
         StreamViewType: NEW_AND_OLD_IMAGES
+      GlobalSecondaryIndexes:
+        - IndexName: OrdersByUser
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: OrdersByStatus
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: updatedAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
   CartsTable:
     Type: AWS::DynamoDB::Table
@@ -50,6 +96,10 @@ Resources:
       AttributeDefinitions:
         - AttributeName: cartId
           AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
       KeySchema:
         - AttributeName: cartId
           KeyType: HASH
@@ -57,6 +107,50 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
+      GlobalSecondaryIndexes:
+        - IndexName: UserCartIndex
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  TransactionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: transactionId
+          AttributeType: S
+        - AttributeName: orderId
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: transactionId
+          KeyType: HASH
+      TableName: !Sub '${AWS::StackName}-transactions'
+      GlobalSecondaryIndexes:
+        - IndexName: TransactionsByOrder
+          KeySchema:
+            - AttributeName: orderId
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: TransactionsByStatus
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
   LambdaExecutionRole:
     Type: AWS::IAM::Role
@@ -86,6 +180,7 @@ Resources:
                   - !GetAtt ProductsTable.Arn
                   - !GetAtt OrdersTable.Arn
                   - !GetAtt CartsTable.Arn
+                  - !GetAtt TransactionsTable.Arn
                   - !Sub '${OrdersTable.Arn}/stream/*'
               - Effect: Allow
                 Action:
@@ -107,6 +202,7 @@ Resources:
           PRODUCTS_TABLE: !Ref ProductsTable
           ORDERS_TABLE: !Ref OrdersTable
           CARTS_TABLE: !Ref CartsTable
+          TRANSACTIONS_TABLE: !Ref TransactionsTable
       Timeout: 30
 
   ApiGateway:
@@ -177,3 +273,6 @@ Outputs:
   CartsTableName:
     Description: Nombre de la tabla DynamoDB de carritos.
     Value: !Ref CartsTable
+  TransactionsTableName:
+    Description: Nombre de la tabla DynamoDB de transacciones de pago.
+    Value: !Ref TransactionsTable
