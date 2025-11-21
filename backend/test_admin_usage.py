@@ -50,7 +50,7 @@ def test_usage_listing_applies_filters_and_pagination():
     event = build_admin_event(
         "/v1/admin/tenants/usage",
         query={"startDate": "2024-05-01", "endDate": "2024-05-02", "metrics": "requests,gmv", "pageSize": "1"},
-        claims={"role": "super-admin"},
+        claims={"roles": ["super_admin"]},
     )
 
     response = handler(event, {})

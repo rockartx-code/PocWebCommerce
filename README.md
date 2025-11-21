@@ -105,6 +105,7 @@ Estas tablas cubren catálogo, carrito, ordenes y conciliación de pagos; permit
 - Simular APIs con `sam local start-api` o `serverless invoke local` para probar las funciones Python.
 - Usar el SDK de Mercado Pago en modo sandbox durante el desarrollo.
 - Ejecutar pruebas unitarias de Lambdas con `pytest` y pruebas E2E del frontend con `ng e2e`.
+- Credenciales de referencia (incluido super admin) en [`docs/test-users.md`](docs/test-users.md) para flujos locales.
 
 ## Módulos de la aplicación web (Angular 20 + Tailwind)
 - **Landing** (`frontend/src/app/features/landing`): hero de onboarding que comunica la arquitectura serverless, botones de entrada a catálogo, back office y panel de autenticación, badges de integraciones (API Gateway, Cognito, CloudFront/S3, Mercado Pago).
