@@ -229,13 +229,158 @@ Resources:
       PathPart: v1
       RestApiId: !Ref ApiGateway
 
-  ApiMethodProxy:
+  ProductsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref ApiResource
+      PathPart: products
+      RestApiId: !Ref ApiGateway
+
+  ProductByIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref ProductsResource
+      PathPart: '{id}'
+      RestApiId: !Ref ApiGateway
+
+  CartResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref ApiResource
+      PathPart: cart
+      RestApiId: !Ref ApiGateway
+
+  OrdersResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref ApiResource
+      PathPart: orders
+      RestApiId: !Ref ApiGateway
+
+  WebhooksResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref ApiResource
+      PathPart: webhooks
+      RestApiId: !Ref ApiGateway
+
+  MercadoPagoWebhookResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref WebhooksResource
+      PathPart: mercadopago
+      RestApiId: !Ref ApiGateway
+
+  AnalyticsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref ApiResource
+      PathPart: analytics
+      RestApiId: !Ref ApiGateway
+
+  SalesAnalyticsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref AnalyticsResource
+      PathPart: sales
+      RestApiId: !Ref ApiGateway
+
+  ProductsGetMethod:
     Type: AWS::ApiGateway::Method
     Properties:
       AuthorizationType: COGNITO_USER_POOLS
       AuthorizerId: !Ref ApiAuthorizer
-      HttpMethod: ANY
-      ResourceId: !Ref ApiResource
+      HttpMethod: GET
+      ResourceId: !Ref ProductsResource
+      RestApiId: !Ref ApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+
+  ProductByIdGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref ApiAuthorizer
+      HttpMethod: GET
+      ResourceId: !Ref ProductByIdResource
+      RestApiId: !Ref ApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+
+  CartGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref ApiAuthorizer
+      HttpMethod: GET
+      ResourceId: !Ref CartResource
+      RestApiId: !Ref ApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+
+  CartPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref ApiAuthorizer
+      HttpMethod: POST
+      ResourceId: !Ref CartResource
+      RestApiId: !Ref ApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+
+  OrdersPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref ApiAuthorizer
+      HttpMethod: POST
+      ResourceId: !Ref OrdersResource
+      RestApiId: !Ref ApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+
+  WebhookMercadoPagoPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref MercadoPagoWebhookResource
+      RestApiId: !Ref ApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+
+  AnalyticsGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref ApiAuthorizer
+      HttpMethod: GET
+      ResourceId: !Ref SalesAnalyticsResource
       RestApiId: !Ref ApiGateway
       Integration:
         Type: AWS_PROXY
@@ -246,7 +391,14 @@ Resources:
 
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
-    DependsOn: ApiMethodProxy
+    DependsOn:
+      - ProductsGetMethod
+      - ProductByIdGetMethod
+      - CartGetMethod
+      - CartPostMethod
+      - OrdersPostMethod
+      - WebhookMercadoPagoPostMethod
+      - AnalyticsGetMethod
     Properties:
       RestApiId: !Ref ApiGateway
       StageName: !Ref StageName

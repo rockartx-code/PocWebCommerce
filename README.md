@@ -29,6 +29,26 @@ Esta solución implementa una aplicación web de comercio electrónico completam
   - `POST /orders`: creación de orden y preferencia de pago en Mercado Pago.
   - `POST /webhooks/mercadopago`: recepción de notificaciones de pago.
   - `GET /analytics/sales`: métricas agregadas para dashboards del back office.
+
+## Lambdas en Python y API Gateway
+La API se modela con un único Lambda Python (`backend/app.py`) que enruta las solicitudes REST expuestas por API Gateway. Cada recurso está definido en `cloudformation/backend.yml` con integración **AWS_PROXY** hacia el handler `app.handler` y CORS abierto para consumo desde el frontend.
+
+### Rutas generadas
+| Método | Ruta | Autenticación | Descripción |
+| --- | --- | --- | --- |
+| GET | `/v1/products` | Cognito (JWT) | Lista productos disponibles. |
+| GET | `/v1/products/{id}` | Cognito (JWT) | Detalle de producto. |
+| GET | `/v1/cart` | Cognito (JWT) | Recupera el carrito activo. |
+| POST | `/v1/cart` | Cognito (JWT) | Crea/actualiza carrito. |
+| POST | `/v1/orders` | Cognito (JWT) | Genera orden y preferencia de pago. |
+| POST | `/v1/webhooks/mercadopago` | Público | Webhook para notificaciones de pago. |
+| GET | `/v1/analytics/sales` | Cognito (JWT) | Métricas de ventas para dashboards. |
+
+### Flujo y arquitectura
+1. **API Gateway** define los recursos bajo `/v1` y aplica un authorizer de Cognito para rutas protegidas.
+2. Todas las rutas se integran en modo proxy con la función Lambda, que internamente mapea `httpMethod` y `path` a controladores especializados (catálogo, carrito, órdenes, webhooks y analytics).
+3. Las respuestas incluyen encabezados CORS básicos y códigos HTTP adecuados (`200`, `201`, `404`, `500`).
+4. Las variables de entorno publican los nombres de tablas DynamoDB (`PRODUCTS_TABLE`, `ORDERS_TABLE`, `CARTS_TABLE`, `TRANSACTIONS_TABLE`) listos para reemplazar la lógica mock por operaciones reales.
 - **Integración con Mercado Pago**
   - Creación de preferencias, manejo de `init_point` para redirigir al checkout.
   - Validación de firmas/secretos de webhooks; actualización de estados de pago.
