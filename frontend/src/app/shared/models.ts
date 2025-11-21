@@ -37,6 +37,27 @@ export interface TenantUsageRecord {
   createdAt: string;
 }
 
+export interface UsageHistoryItem {
+  period: string;
+  usage: Record<string, number>;
+  createdAt: string;
+}
+
+export interface TenantUsageSnapshot {
+  tenantId: string;
+  summary: Record<string, number>;
+  history: UsageHistoryItem[];
+}
+
+export interface BillingSnapshot {
+  tenantId: string;
+  status: string;
+  nextBillingAt?: string;
+  retryAttempts?: number;
+  lastPayment?: string;
+  amountDue?: number;
+}
+
 export interface TenantUsageResponse {
   items: TenantUsageRecord[];
   page: number;

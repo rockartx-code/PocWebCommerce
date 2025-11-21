@@ -9,6 +9,8 @@ describe('API_ROUTES', () => {
     expect(API_ROUTES.cart('t-001')).toBe('/v1/t-001/cart');
     expect(API_ROUTES.orders('t-001')).toBe('/v1/t-001/orders');
     expect(API_ROUTES.analytics('t-001')).toBe('/v1/t-001/analytics/sales');
+    expect(API_ROUTES.tenantUsage('t-001')).toBe('/v1/t-001/usage');
+    expect(API_ROUTES.tenantBilling('t-001')).toBe('/v1/t-001/billing');
     expect(API_ROUTES.mercadopagoWebhook('t-001')).toBe('/v1/t-001/webhooks/mercadopago');
   });
 
@@ -17,6 +19,8 @@ describe('API_ROUTES', () => {
     expect(ROUTES_REQUIRING_TENANT.has(API_ROUTES.cart)).toBeTrue();
     expect(ROUTES_REQUIRING_TENANT.has(API_ROUTES.orders)).toBeTrue();
     expect(ROUTES_REQUIRING_TENANT.has(API_ROUTES.analytics)).toBeTrue();
+    expect(ROUTES_REQUIRING_TENANT.has(API_ROUTES.tenantUsage)).toBeTrue();
+    expect(ROUTES_REQUIRING_TENANT.has(API_ROUTES.tenantBilling)).toBeTrue();
     expect(ROUTES_REQUIRING_TENANT.has(API_ROUTES.mercadopagoWebhook)).toBeFalse();
   });
 });

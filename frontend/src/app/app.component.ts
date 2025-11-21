@@ -21,8 +21,10 @@ import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
             <a routerLink="/catalog" routerLinkActive="text-indigo-300" class="hover:text-indigo-200 transition-colors">Catálogo</a>
             <a routerLink="/cart" routerLinkActive="text-indigo-300" class="hover:text-indigo-200 transition-colors">Carrito</a>
             <a routerLink="/analytics" routerLinkActive="text-indigo-300" class="hover:text-indigo-200 transition-colors">Analytics</a>
+            <a routerLink="/usage" routerLinkActive="text-indigo-300" class="hover:text-indigo-200 transition-colors">Uso</a>
             <a routerLink="/admin" routerLinkActive="text-indigo-300" class="hover:text-indigo-200 transition-colors">Backoffice</a>
             <a routerLink="/super-admin" routerLinkActive="text-indigo-300" class="hover:text-indigo-200 transition-colors">Super Admin</a>
+            <a routerLink="/super-admin/billing" routerLinkActive="text-indigo-300" class="hover:text-indigo-200 transition-colors">Billing Ops</a>
             <a routerLink="/auth" routerLinkActive="text-indigo-300" class="hover:text-indigo-200 transition-colors">Auth JWT</a>
           </nav>
         </div>

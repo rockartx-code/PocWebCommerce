@@ -5,6 +5,18 @@ Parameters:
   LogBucketName:
     Type: String
     Description: Bucket para logs de auditoría y accesos.
+  UsageEventsTableName:
+    Type: String
+    Default: usage-events
+    Description: Tabla DynamoDB para eventos crudos de consumo multi-tenant.
+  UsageAggregatesTableName:
+    Type: String
+    Default: usage-aggregates
+    Description: Tabla DynamoDB para agregados diarios por tenant.
+  UsageDeliveryStreamName:
+    Type: String
+    Default: usage-events-firehose
+    Description: Nombre del stream de Firehose que aterriza en S3.
 
 Resources:
   LogsBucket:
@@ -18,6 +30,77 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+
+  UsageEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref UsageEventsTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: tenantId
+          AttributeType: S
+        - AttributeName: period
+          AttributeType: S
+      KeySchema:
+        - AttributeName: tenantId
+          KeyType: HASH
+        - AttributeName: period
+          KeyType: RANGE
+
+  UsageAggregatesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref UsageAggregatesTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: tenantId
+          AttributeType: S
+        - AttributeName: period
+          AttributeType: S
+      KeySchema:
+        - AttributeName: tenantId
+          KeyType: HASH
+        - AttributeName: period
+          KeyType: RANGE
+
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: firehose-s3
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${LogsBucket.Arn}/*'
+                  - !GetAtt LogsBucket.Arn
+
+  UsageDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Ref UsageDeliveryStreamName
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt LogsBucket.Arn
+        Prefix: "usage/raw/!{timestamp:yyyy/MM/dd}/"
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 1
+        CompressionFormat: GZIP
+        RoleARN: !GetAtt FirehoseRole.Arn
 
   SalesDashboard:
     Type: AWS::CloudWatch::Dashboard
@@ -39,6 +122,23 @@ Resources:
                 "region": "${AWS::Region}",
                 "title": "Llamadas y errores API"
               }
+            },
+            {
+              "type": "metric",
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "PocCommerce/Usage", "Requests", "TenantId", "*", {"stat": "Sum"} ],
+                  [ ".", "Orders", ".", ".", {"stat": "Sum"} ],
+                  [ ".", "GMV", ".", ".", {"stat": "Average"} ],
+                  [ ".", "Bytes", ".", ".", {"stat": "Sum"} ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Requests, órdenes, GMV y bytes por tenant"
+              }
             }
           ]
         }
@@ -58,6 +158,27 @@ Resources:
       Threshold: 5
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
+
+  SuspendedTenantAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alertar cuando un tenant genera muchos bytes en 5m.
+      Namespace: PocCommerce/Usage
+      MetricName: Bytes
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 50000000
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  DailyAggregationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Ejecuta la Lambda de agregación diaria.
+      ScheduleExpression: cron(5 0 * * ? *)
+      State: ENABLED
+      Targets: []
 
 Outputs:
   LogsBucketName:
