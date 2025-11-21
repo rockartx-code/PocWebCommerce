@@ -36,23 +36,28 @@ def parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
 
-def get_products(_: Dict[str, Any], __: Dict[str, str]) -> LambdaResponse:
+def get_products(_: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
+    tenant_id = params.get("tenantId", "public")
     products = [
         {
-            "productId": "prd-001",
+            "tenantId": tenant_id,
+            "productId": f"{tenant_id}#prd-001",
             "name": "Camiseta Tech",
             "price": 19.99,
             "currency": "USD",
             "stock": 42,
             "category": "apparel",
+            "assetPrefix": f"s3://commerce-assets/{tenant_id}/products/prd-001",
         },
         {
-            "productId": "prd-002",
+            "tenantId": tenant_id,
+            "productId": f"{tenant_id}#prd-002",
             "name": "Zapatillas Runner",
             "price": 89.9,
             "currency": "USD",
             "stock": 12,
             "category": "footwear",
+            "assetPrefix": f"s3://commerce-assets/{tenant_id}/products/prd-002",
         },
     ]
     return 200, {"items": products, "count": len(products)}, {}
@@ -60,24 +65,29 @@ def get_products(_: Dict[str, Any], __: Dict[str, str]) -> LambdaResponse:
 
 def get_product_by_id(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
     product_id = params.get("productId") or (event.get("pathParameters") or {}).get("id")
+    tenant_id = params.get("tenantId", "public")
     product = {
+        "tenantId": tenant_id,
         "productId": product_id,
         "name": "Producto Demo",
         "description": "Detalle del producto solicitado",
         "price": 49.5,
         "currency": "USD",
         "stock": 8,
+        "assetPrefix": f"s3://commerce-assets/{tenant_id}/products/{product_id}",
     }
     return 200, product, {}
 
 
-def create_cart(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
+def create_cart(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
     payload = parse_body(event)
+    tenant_id = params.get("tenantId", "public")
     items = payload.get("items", [])
-    cart_id = payload.get("cartId") or f"cart-{uuid.uuid4().hex[:8]}"
+    cart_id = payload.get("cartId") or f"{tenant_id}#cart-{uuid.uuid4().hex[:8]}"
     totals = sum(item.get("price", 0) * item.get("quantity", 1) for item in items)
     expires_at = (datetime.utcnow() + timedelta(hours=2)).isoformat() + "Z"
     cart = {
+        "tenantId": tenant_id,
         "cartId": cart_id,
         "items": items,
         "totals": {"amount": round(totals, 2), "currency": payload.get("currency", "USD")},
@@ -86,10 +96,12 @@ def create_cart(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
     return 201, cart, {}
 
 
-def get_cart(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
+def get_cart(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
     user_id = (event.get("queryStringParameters") or {}).get("userId", "guest")
+    tenant_id = params.get("tenantId", "public")
     cart = {
-        "cartId": f"cart-{user_id}",
+        "tenantId": tenant_id,
+        "cartId": f"{tenant_id}#cart-{user_id}",
         "items": [
             {"productId": "prd-001", "quantity": 1, "price": 19.99},
             {"productId": "prd-002", "quantity": 2, "price": 89.9},
@@ -100,11 +112,13 @@ def get_cart(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
     return 200, cart, {}
 
 
-def create_order(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
+def create_order(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
     payload = parse_body(event)
-    order_id = f"ord-{uuid.uuid4().hex[:10]}"
-    preference_id = f"pref-{uuid.uuid4().hex[:6]}"
+    tenant_id = params.get("tenantId", "public")
+    order_id = f"{tenant_id}#ord-{uuid.uuid4().hex[:10]}"
+    preference_id = f"{tenant_id}#pref-{uuid.uuid4().hex[:6]}"
     order = {
+        "tenantId": tenant_id,
         "orderId": order_id,
         "amount": payload.get("amount", 0),
         "currency": payload.get("currency", "USD"),
@@ -117,8 +131,9 @@ def create_order(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
     return 201, order, headers
 
 
-def handle_mercadopago_webhook(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
+def handle_mercadopago_webhook(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
     payload = parse_body(event)
+    tenant_id = params.get("tenantId", "public")
     notification_type = payload.get("type", "payment")
     resource_id = payload.get("data", {}).get("id", "unknown")
     receipt = {
@@ -126,14 +141,17 @@ def handle_mercadopago_webhook(event: Dict[str, Any], _: Dict[str, str]) -> Lamb
         "resourceId": resource_id,
         "notificationType": notification_type,
         "status": "acknowledged",
+        "tenantId": tenant_id,
     }
     return 200, receipt, {}
 
 
-def get_sales_analytics(_: Dict[str, Any], __: Dict[str, str]) -> LambdaResponse:
+def get_sales_analytics(_: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
     now = datetime.utcnow()
+    tenant_id = params.get("tenantId", "public")
     metrics = {
         "period": now.strftime("%Y-%m-%d"),
+        "tenantId": tenant_id,
         "totals": {"revenue": 15230.75, "currency": "USD", "orders": 178},
         "topProducts": [
             {"productId": "prd-002", "name": "Zapatillas Runner", "orders": 54},
@@ -153,23 +171,29 @@ def extract_tenant_id(event: Dict[str, Any]) -> str | None:
     return str(tenant_id)
 
 
-def inject_tenant(event: Dict[str, Any], params: Dict[str, str]) -> Tuple[str | None, Dict[str, Any], Dict[str, str]]:
+def inject_tenant(event: Dict[str, Any], params: Dict[str, str]) -> Tuple[str | None, Dict[str, Any], Dict[str, str], str | None]:
     tenant_id = extract_tenant_id(event)
     if not tenant_id:
-        return None, event, params
+        return None, event, params, None
+    path_tenant = (
+        params.get("tenantId")
+        or (event.get("pathParameters") or {}).get("tenantId")
+        or (event.get("queryStringParameters") or {}).get("tenantId")
+        or (event.get("headers") or {}).get("x-tenant-id")
+    )
     event_with_tenant = {**event, "tenantId": tenant_id}
     params_with_tenant = {**params, "tenantId": tenant_id}
-    return tenant_id, event_with_tenant, params_with_tenant
+    return tenant_id, event_with_tenant, params_with_tenant, path_tenant
 
 
 ROUTES: Iterable[Route] = (
-    ("GET", re.compile(r"^/v1/products$"), get_products, True),
-    ("GET", re.compile(r"^/v1/products/(?P<productId>[^/]+)$"), get_product_by_id, True),
-    ("POST", re.compile(r"^/v1/cart$"), create_cart, True),
-    ("GET", re.compile(r"^/v1/cart$"), get_cart, True),
-    ("POST", re.compile(r"^/v1/orders$"), create_order, True),
-    ("POST", re.compile(r"^/v1/webhooks/mercadopago$"), handle_mercadopago_webhook, False),
-    ("GET", re.compile(r"^/v1/analytics/sales$"), get_sales_analytics, True),
+    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/products$"), get_products, True),
+    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/products/(?P<productId>[^/]+)$"), get_product_by_id, True),
+    ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/cart$"), create_cart, True),
+    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/cart$"), get_cart, True),
+    ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/orders$"), create_order, True),
+    ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/webhooks/mercadopago$"), handle_mercadopago_webhook, False),
+    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/analytics/sales$"), get_sales_analytics, True),
 )
 
 
@@ -185,9 +209,11 @@ def route_event(event: Dict[str, Any]) -> Dict[str, Any]:
             continue
         params = match.groupdict()
         if requires_tenant:
-            tenant_id, event, params = inject_tenant(event, params)
+            tenant_id, event, params, path_tenant = inject_tenant(event, params)
             if not tenant_id:
                 return build_response(401, {"message": "Missing tenantId claim"})
+            if path_tenant and path_tenant != tenant_id:
+                return build_response(403, {"message": "Tenant mismatch"})
         status_code, payload, headers = handler(event, params)
         return build_response(status_code, payload, headers)
 

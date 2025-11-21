@@ -1,44 +1,55 @@
 import { Injectable } from '@angular/core';
 import { delay, Observable, of } from 'rxjs';
+import { AuthService } from './auth.service';
 import { Product } from './models';
 
 @Injectable({ providedIn: 'root' })
 export class CatalogService {
-  private readonly products: Product[] = [
-    {
-      id: 'p-001',
-      name: 'Cámara 4K Serverless',
-      description: 'Equipo IoT optimizado para subir evidencia a S3 con eventos en EventBridge.',
-      price: 499,
-      currency: 'USD',
-      stock: 23,
-      category: 'Electrónica',
-      tags: ['4K', 'IoT', 'S3'],
-      images: ['https://placehold.co/600x400']
-    },
-    {
-      id: 'p-002',
-      name: 'Terminal POS Integrada',
-      description: 'Compatible con Mercado Pago, expone webhooks y recibe confirmación de pagos.',
-      price: 259,
-      currency: 'USD',
-      stock: 12,
-      category: 'Pagos',
-      tags: ['POS', 'MercadoPago'],
-      images: ['https://placehold.co/600x400']
-    },
-    {
-      id: 'p-003',
-      name: 'Kit Dev Angular + Tailwind',
-      description: 'Stack frontend para catálogos headless, con componentes reutilizables.',
-      price: 129,
-      currency: 'USD',
-      stock: 52,
-      category: 'Software',
-      tags: ['Angular', 'Tailwind'],
-      images: ['https://placehold.co/600x400']
-    }
-  ];
+  private readonly tenantAssetPrefix: string;
+  private readonly products: Product[];
+
+  constructor(private auth: AuthService) {
+    this.tenantAssetPrefix = this.auth.assetPrefix('assets/products');
+    this.products = [
+      {
+        id: 'p-001',
+        name: 'Cámara 4K Serverless',
+        description: 'Equipo IoT optimizado para subir evidencia a S3 con eventos en EventBridge.',
+        price: 499,
+        currency: 'USD',
+        stock: 23,
+        category: 'Electrónica',
+        tags: ['4K', 'IoT', 'S3'],
+        images: [this.buildImagePath('camara-4k.jpg')]
+      },
+      {
+        id: 'p-002',
+        name: 'Terminal POS Integrada',
+        description: 'Compatible con Mercado Pago, expone webhooks y recibe confirmación de pagos.',
+        price: 259,
+        currency: 'USD',
+        stock: 12,
+        category: 'Pagos',
+        tags: ['POS', 'MercadoPago'],
+        images: [this.buildImagePath('terminal-pos.jpg')]
+      },
+      {
+        id: 'p-003',
+        name: 'Kit Dev Angular + Tailwind',
+        description: 'Stack frontend para catálogos headless, con componentes reutilizables.',
+        price: 129,
+        currency: 'USD',
+        stock: 52,
+        category: 'Software',
+        tags: ['Angular', 'Tailwind'],
+        images: [this.buildImagePath('kit-angular-tailwind.jpg')]
+      }
+    ];
+  }
+
+  private buildImagePath(fileName: string): string {
+    return `${this.tenantAssetPrefix}/${fileName}`;
+  }
 
   list(search?: string): Observable<Product[]> {
     if (!search) {

@@ -57,6 +57,22 @@ export class AuthService {
     return { Authorization: `Bearer ${value}`, 'X-Tenant-Id': tenantId };
   }
 
+  get tenantId(): string | null {
+    const claims = this.claims();
+    if (!claims || this.isExpired(claims.exp)) {
+      this.clear();
+      return null;
+    }
+    return this.extractTenantId(claims);
+  }
+
+  assetPrefix(path: string = ''): string {
+    const tenant = this.tenantId ?? 'public';
+    const normalizedPath = path.replace(/^\//, '');
+    const suffix = normalizedPath ? `/${normalizedPath}` : '';
+    return `https://cdn.poc-web-commerce.example/${tenant}${suffix}`;
+  }
+
   private decodeClaims(token: string): JwtClaims | null {
     const parts = token.split('.');
     if (parts.length < 2) {
