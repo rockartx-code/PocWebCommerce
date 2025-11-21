@@ -2,6 +2,9 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: API Gateway + Lambda (Python) para catálogo, carrito y pagos con Mercado Pago.
 
 Parameters:
+  TenantId:
+    Type: String
+    Description: Identificador único del tenant (usado para etiquetar recursos y particionar datos).
   StageName:
     Type: String
     Default: prod
@@ -38,6 +41,9 @@ Resources:
         - AttributeName: productId
           KeyType: RANGE
       TableName: !Sub '${AWS::StackName}-products'
+      Tags:
+        - Key: tenantId
+          Value: !Ref TenantId
       GlobalSecondaryIndexes:
         - IndexName: CategoryIndex
           KeySchema:
@@ -81,6 +87,9 @@ Resources:
       TableName: !Sub '${AWS::StackName}-orders'
       StreamSpecification:
         StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+        - Key: tenantId
+          Value: !Ref TenantId
       GlobalSecondaryIndexes:
         - IndexName: OrdersByUser
           KeySchema:
@@ -121,6 +130,9 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
+      Tags:
+        - Key: tenantId
+          Value: !Ref TenantId
       GlobalSecondaryIndexes:
         - IndexName: UserCartIndex
           KeySchema:
@@ -152,6 +164,9 @@ Resources:
         - AttributeName: transactionId
           KeyType: RANGE
       TableName: !Sub '${AWS::StackName}-transactions'
+      Tags:
+        - Key: tenantId
+          Value: !Ref TenantId
       GlobalSecondaryIndexes:
         - IndexName: TransactionsByOrder
           KeySchema:
@@ -169,6 +184,24 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+
+  TenantsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: tenantId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: tenantId
+          KeyType: HASH
+      TableName: tenants
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: tenantId
+          Value: !Ref TenantId
 
   LambdaExecutionRole:
     Type: AWS::IAM::Role
@@ -199,6 +232,7 @@ Resources:
                   - !GetAtt OrdersTable.Arn
                   - !GetAtt CartsTable.Arn
                   - !GetAtt TransactionsTable.Arn
+                  - !GetAtt TenantsTable.Arn
                   - !Sub '${OrdersTable.Arn}/stream/*'
               - Effect: Allow
                 Action:
@@ -217,16 +251,18 @@ Resources:
         S3Key: !Ref LambdaCodeS3Key
       Environment:
         Variables:
+          TENANT_ID: !Ref TenantId
           PRODUCTS_TABLE: !Ref ProductsTable
           ORDERS_TABLE: !Ref OrdersTable
           CARTS_TABLE: !Ref CartsTable
           TRANSACTIONS_TABLE: !Ref TransactionsTable
+          TENANTS_TABLE: !Ref TenantsTable
       Timeout: 30
 
   ApiGateway:
     Type: AWS::ApiGateway::RestApi
     Properties:
-      Name: !Sub '${AWS::StackName}-api'
+      Name: !Sub '${AWS::StackName}-api-${TenantId}'
       EndpointConfiguration:
         Types: [REGIONAL]
 
@@ -446,3 +482,6 @@ Outputs:
   TransactionsTableName:
     Description: Nombre de la tabla DynamoDB de transacciones de pago.
     Value: !Ref TransactionsTable
+  TenantsTableName:
+    Description: Tabla central donde se almacena el estado y metadatos de cada tenant.
+    Value: !Ref TenantsTable

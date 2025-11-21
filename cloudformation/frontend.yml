@@ -2,15 +2,32 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: Frontend estático para Angular 20 en S3 + CloudFront con OAI.
 
 Parameters:
+  TenantId:
+    Type: String
+    Description: Identificador único del tenant (utilizado para componer nombres de recursos y dominios).
   SiteBucketName:
     Type: String
     Description: Nombre del bucket S3 donde se aloja el frontend Angular.
   DomainName:
     Type: String
-    Description: Dominio personalizado (ej. shop.example.com).
+    Default: ''
+    Description: Dominio personalizado completo (ej. shop.example.com). Si se deja vacío se usará BaseDomainName + TenantId.
+  BaseDomainName:
+    Type: String
+    Default: ''
+    Description: Dominio base (ej. example.com) para generar subdominios por tenant.
+  HostedZoneId:
+    Type: String
+    Default: ''
+    Description: Hosted Zone de Route53 donde se creará el subdominio del tenant (requiere BaseDomainName).
   AcmCertificateArn:
     Type: String
     Description: ARN del certificado ACM en us-east-1 para CloudFront.
+
+Conditions:
+  UseBaseDomain: !Not [!Equals [!Ref BaseDomainName, '']]
+  HasDomainName: !Not [!Equals [!Ref DomainName, '']]
+  CreateRecordSet: !And [!Condition UseBaseDomain, !Not [!Equals [!Ref HostedZoneId, '']]]
 
 Resources:
   SiteBucket:
@@ -54,8 +71,10 @@ Resources:
       DistributionConfig:
         Enabled: true
         Comment: CDN para Angular + Tailwind
-        Aliases:
-          - !Ref DomainName
+        Aliases: !If
+          - UseBaseDomain
+          - - !Sub '${TenantId}.${BaseDomainName}'
+          - !If [HasDomainName, [!Ref DomainName], !Ref AWS::NoValue]
         DefaultRootObject: index.html
         Origins:
           - DomainName: !GetAtt SiteBucket.RegionalDomainName
@@ -76,6 +95,17 @@ Resources:
           SslSupportMethod: sni-only
           MinimumProtocolVersion: TLSv1.2_2021
 
+  TenantSubdomainRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateRecordSet
+    Properties:
+      Name: !Sub '${TenantId}.${BaseDomainName}'
+      Type: A
+      HostedZoneId: !Ref HostedZoneId
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
 Outputs:
   BucketName:
     Description: Bucket que aloja el frontend.
@@ -86,3 +116,6 @@ Outputs:
   DistributionDomain:
     Description: Dominio CDN del sitio.
     Value: !GetAtt Distribution.DomainName
+  TenantDomain:
+    Description: Dominio asociado al tenant (subdominio generado o dominio personalizado).
+    Value: !If [UseBaseDomain, !Sub '${TenantId}.${BaseDomainName}', !Ref DomainName]
