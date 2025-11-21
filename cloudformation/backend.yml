@@ -22,6 +22,8 @@ Resources:
     Properties:
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
+        - AttributeName: tenantId
+          AttributeType: S
         - AttributeName: productId
           AttributeType: S
         - AttributeName: category
@@ -31,22 +33,26 @@ Resources:
         - AttributeName: slug
           AttributeType: S
       KeySchema:
-        - AttributeName: productId
+        - AttributeName: tenantId
           KeyType: HASH
+        - AttributeName: productId
+          KeyType: RANGE
       TableName: !Sub '${AWS::StackName}-products'
       GlobalSecondaryIndexes:
         - IndexName: CategoryIndex
           KeySchema:
-            - AttributeName: category
+            - AttributeName: tenantId
               KeyType: HASH
-            - AttributeName: status
+            - AttributeName: category
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
         - IndexName: SlugIndex
           KeySchema:
-            - AttributeName: slug
+            - AttributeName: tenantId
               KeyType: HASH
+            - AttributeName: slug
+              KeyType: RANGE
           Projection:
             ProjectionType: ALL
 
@@ -55,6 +61,8 @@ Resources:
     Properties:
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
+        - AttributeName: tenantId
+          AttributeType: S
         - AttributeName: orderId
           AttributeType: S
         - AttributeName: userId
@@ -66,25 +74,27 @@ Resources:
         - AttributeName: updatedAt
           AttributeType: S
       KeySchema:
-        - AttributeName: orderId
+        - AttributeName: tenantId
           KeyType: HASH
+        - AttributeName: orderId
+          KeyType: RANGE
       TableName: !Sub '${AWS::StackName}-orders'
       StreamSpecification:
         StreamViewType: NEW_AND_OLD_IMAGES
       GlobalSecondaryIndexes:
         - IndexName: OrdersByUser
           KeySchema:
-            - AttributeName: userId
+            - AttributeName: tenantId
               KeyType: HASH
-            - AttributeName: createdAt
+            - AttributeName: userId
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
         - IndexName: OrdersByStatus
           KeySchema:
-            - AttributeName: status
+            - AttributeName: tenantId
               KeyType: HASH
-            - AttributeName: updatedAt
+            - AttributeName: status
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
@@ -94,6 +104,8 @@ Resources:
     Properties:
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
+        - AttributeName: tenantId
+          AttributeType: S
         - AttributeName: cartId
           AttributeType: S
         - AttributeName: userId
@@ -101,8 +113,10 @@ Resources:
         - AttributeName: createdAt
           AttributeType: S
       KeySchema:
-        - AttributeName: cartId
+        - AttributeName: tenantId
           KeyType: HASH
+        - AttributeName: cartId
+          KeyType: RANGE
       TableName: !Sub '${AWS::StackName}-carts'
       TimeToLiveSpecification:
         AttributeName: ttl
@@ -122,6 +136,8 @@ Resources:
     Properties:
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
+        - AttributeName: tenantId
+          AttributeType: S
         - AttributeName: transactionId
           AttributeType: S
         - AttributeName: orderId
@@ -131,23 +147,25 @@ Resources:
         - AttributeName: createdAt
           AttributeType: S
       KeySchema:
-        - AttributeName: transactionId
+        - AttributeName: tenantId
           KeyType: HASH
+        - AttributeName: transactionId
+          KeyType: RANGE
       TableName: !Sub '${AWS::StackName}-transactions'
       GlobalSecondaryIndexes:
         - IndexName: TransactionsByOrder
           KeySchema:
-            - AttributeName: orderId
+            - AttributeName: tenantId
               KeyType: HASH
-            - AttributeName: createdAt
+            - AttributeName: orderId
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
         - IndexName: TransactionsByStatus
           KeySchema:
-            - AttributeName: status
+            - AttributeName: tenantId
               KeyType: HASH
-            - AttributeName: createdAt
+            - AttributeName: status
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
