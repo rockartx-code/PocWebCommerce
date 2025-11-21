@@ -29,3 +29,20 @@ export interface AnalyticsSnapshot {
   conversion: number;
   topProducts: { name: string; sales: number }[];
 }
+
+export interface TenantUsageRecord {
+  tenantId: string;
+  period: string;
+  usage: Record<string, number>;
+  createdAt: string;
+}
+
+export interface TenantUsageResponse {
+  items: TenantUsageRecord[];
+  page: number;
+  pageSize: number;
+  total: number;
+  availableMetrics: string[];
+  summary: Record<string, number>;
+  filters: { startDate?: string | null; endDate?: string | null };
+}
