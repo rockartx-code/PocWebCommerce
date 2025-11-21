@@ -2,7 +2,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, Iterable, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 from usage_tracker import tracker
 
@@ -10,6 +10,11 @@ from usage_tracker import tracker
 Headers = Dict[str, str]
 LambdaResponse = Tuple[int, Dict[str, Any], Headers]
 Route = Tuple[str, re.Pattern[str], Callable[[Dict[str, Any], Dict[str, str]], LambdaResponse], bool]
+
+
+MAX_PAYMENT_RETRIES = 3
+subscription_registry: Dict[str, Dict[str, Any]] = {}
+payment_registry: List[Dict[str, Any]] = []
 
 
 def build_response(status_code: int, body: Dict[str, Any], extra_headers: Headers | None = None) -> Dict[str, Any]:
@@ -76,6 +81,76 @@ def record_usage_event(
     )
 
 
+def ensure_subscription(tenant_id: str, plan_id: str | None = None) -> Dict[str, Any]:
+    subscription = subscription_registry.get(tenant_id)
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    if not subscription:
+        subscription = {
+            "subscriptionId": f"{tenant_id}#sub-{uuid.uuid4().hex[:8]}",
+            "tenantId": tenant_id,
+            "planId": plan_id or "standard",
+            "status": "active",
+            "preferenceId": None,
+            "nextBillingAt": (datetime.utcnow() + timedelta(days=30)).isoformat() + "Z",
+            "retryAttempts": 0,
+            "updatedAt": now_iso,
+            "createdAt": now_iso,
+        }
+        subscription_registry[tenant_id] = subscription
+    elif plan_id:
+        subscription["planId"] = plan_id
+    return subscription
+
+
+def log_payment(tenant_id: str, resource_id: str, status: str, amount: float | None, currency: str | None) -> Dict[str, Any]:
+    receipt = {
+        "receivedAt": datetime.utcnow().isoformat() + "Z",
+        "resourceId": resource_id,
+        "status": status,
+        "tenantId": tenant_id,
+        "amount": amount,
+        "currency": currency or "USD",
+    }
+    payment_registry.append(receipt)
+    return receipt
+
+
+def update_subscription_status(subscription: Dict[str, Any], status: str) -> None:
+    subscription["status"] = status
+    subscription["updatedAt"] = datetime.utcnow().isoformat() + "Z"
+
+
+def process_payment_status(
+    tenant_id: str,
+    resource_id: str,
+    status: str,
+    amount: float | None,
+    currency: str | None,
+) -> Dict[str, Any]:
+    subscription = ensure_subscription(tenant_id)
+    receipt = log_payment(tenant_id, resource_id, status, amount, currency)
+
+    normalized_status = status.lower()
+    successful_statuses = {"approved", "authorized"}
+    pending_statuses = {"in_process", "pending"}
+
+    if normalized_status in successful_statuses:
+        subscription["retryAttempts"] = 0
+        update_subscription_status(subscription, "active")
+        subscription["nextBillingAt"] = (datetime.utcnow() + timedelta(days=30)).isoformat() + "Z"
+    elif normalized_status in pending_statuses:
+        update_subscription_status(subscription, "pending")
+    else:
+        subscription["retryAttempts"] = subscription.get("retryAttempts", 0) + 1
+        if subscription["retryAttempts"] >= MAX_PAYMENT_RETRIES:
+            update_subscription_status(subscription, "suspended")
+            subscription["suspendedReason"] = "payment_failed"
+        else:
+            update_subscription_status(subscription, "retrying")
+
+    return receipt
+
+
 def create_tenant(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
     payload = parse_body(event)
     tenant_id = payload.get("tenantId") or f"t-{uuid.uuid4().hex[:8]}"
@@ -113,6 +188,42 @@ def create_tenant(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
     headers = {"X-Tenant-Id": tenant_id}
     record_usage_event(event, tenant_id, requests=1)
     return 201, body, headers
+
+
+def create_subscription_checkout(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
+    tenant_id = params.get("tenantId", "public")
+    payload = parse_body(event)
+    plan_id = payload.get("planId") or "standard"
+    subscription = ensure_subscription(tenant_id, plan_id)
+    subscription_id = payload.get("subscriptionId") or subscription.get("subscriptionId")
+    preference_id = f"{tenant_id}#pref-sub-{uuid.uuid4().hex[:8]}"
+
+    subscription.update(
+        {
+            "planId": plan_id,
+            "subscriptionId": subscription_id,
+            "preferenceId": preference_id,
+            "status": "active",
+            "retryAttempts": 0,
+            "updatedAt": datetime.utcnow().isoformat() + "Z",
+        }
+    )
+
+    checkout = {
+        "tenantId": tenant_id,
+        "subscriptionId": subscription_id,
+        "planId": plan_id,
+        "checkoutPreference": {
+            "id": preference_id,
+            "type": "recurring",
+            "provider": "mercadopago",
+        },
+        "status": subscription["status"],
+        "nextBillingAt": subscription.get("nextBillingAt"),
+    }
+    headers = {"X-MercadoPago-Preference": preference_id, "X-Tenant-Id": tenant_id}
+    record_usage_event(event, tenant_id, requests=1)
+    return 201, checkout, headers
 
 
 def create_tenant_user(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
@@ -240,15 +351,30 @@ def create_order(event: Dict[str, Any], params: Dict[str, str]) -> LambdaRespons
 def handle_mercadopago_webhook(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
     payload = parse_body(event)
     tenant_id = params.get("tenantId", "public")
-    notification_type = payload.get("type", "payment")
-    resource_id = payload.get("data", {}).get("id", "unknown")
-    receipt = {
-        "receivedAt": datetime.utcnow().isoformat() + "Z",
-        "resourceId": resource_id,
-        "notificationType": notification_type,
-        "status": "acknowledged",
-        "tenantId": tenant_id,
-    }
+    notification_type = payload.get("type") or payload.get("action") or "payment"
+    data = payload.get("data") or {}
+    resource_id = data.get("id") or "unknown"
+
+    if notification_type.startswith("subscription"):
+        plan_id = data.get("planId") or data.get("plan_id") or payload.get("planId")
+        subscription = ensure_subscription(tenant_id, plan_id)
+        subscription_status = data.get("status") or payload.get("status") or subscription.get("status", "active")
+        update_subscription_status(subscription, subscription_status)
+        receipt = {
+            "receivedAt": datetime.utcnow().isoformat() + "Z",
+            "resourceId": resource_id,
+            "notificationType": notification_type,
+            "status": subscription_status,
+            "tenantId": tenant_id,
+            "planId": subscription.get("planId"),
+        }
+    else:
+        payment_status = data.get("status") or payload.get("status") or "pending"
+        amount = data.get("transaction_amount") or data.get("amount")
+        currency = data.get("currency_id") or data.get("currency")
+        receipt = process_payment_status(tenant_id, resource_id, payment_status, amount, currency)
+        receipt.update({"notificationType": notification_type})
+
     record_usage_event(event, tenant_id, requests=1)
     return 200, receipt, {}
 
@@ -268,6 +394,41 @@ def get_sales_analytics(_: Dict[str, Any], params: Dict[str, str]) -> LambdaResp
     }
     record_usage_event({}, tenant_id, requests=1)
     return 200, metrics, {}
+
+
+def get_billing_status(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
+    tenant_id = params.get("tenantId", "public")
+    subscription = subscription_registry.get(tenant_id)
+    if not subscription:
+        return 404, {"message": "Subscription not found", "tenantId": tenant_id}, {}
+
+    payments = [p for p in payment_registry if p.get("tenantId") == tenant_id]
+    response = {
+        "tenantId": tenant_id,
+        "subscription": subscription,
+        "recentPayments": payments[-10:],
+    }
+    record_usage_event(event, tenant_id, requests=1)
+    return 200, response, {}
+
+
+def list_billing_status(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
+    if not is_super_admin(event):
+        return 403, {"message": "Super admin role required"}, {}
+
+    tenants: List[Dict[str, Any]] = []
+    for tenant_id, subscription in subscription_registry.items():
+        last_payment = next((p for p in reversed(payment_registry) if p.get("tenantId") == tenant_id), None)
+        tenants.append(
+            {
+                "tenantId": tenant_id,
+                "subscription": subscription,
+                "lastPayment": last_payment,
+                "billingHealth": "suspended" if subscription.get("status") == "suspended" else "ok",
+            }
+        )
+
+    return 200, {"items": tenants, "total": len(tenants)}, {}
 
 
 def list_tenant_usage(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
@@ -364,9 +525,17 @@ ROUTES: Iterable[Route] = (
     ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/cart$"), create_cart, True),
     ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/cart$"), get_cart, True),
     ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/orders$"), create_order, True),
+    (
+        "POST",
+        re.compile(r"^/v1/(?P<tenantId>[^/]+)/subscriptions/checkout$"),
+        create_subscription_checkout,
+        True,
+    ),
     ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/webhooks/mercadopago$"), handle_mercadopago_webhook, False),
     ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/analytics/sales$"), get_sales_analytics, True),
+    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/billing$"), get_billing_status, True),
     ("GET", re.compile(r"^/v1/admin/tenants/usage$"), list_tenant_usage, False),
+    ("GET", re.compile(r"^/v1/admin/tenants/billing$"), list_billing_status, False),
 )
 
 
