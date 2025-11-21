@@ -2,6 +2,8 @@ import { API_ROUTES, ROUTES_REQUIRING_TENANT } from './routes';
 
 describe('API_ROUTES', () => {
   it('define rutas coherentes con el backend v1', () => {
+    expect(API_ROUTES.tenants).toBe('/v1/tenants');
+    expect(API_ROUTES.tenantUsers('t-001')).toBe('/v1/tenants/t-001/users');
     expect(API_ROUTES.products('t-001')).toBe('/v1/t-001/products');
     expect(API_ROUTES.productById('t-001', 'abc')).toBe('/v1/t-001/products/abc');
     expect(API_ROUTES.cart('t-001')).toBe('/v1/t-001/cart');

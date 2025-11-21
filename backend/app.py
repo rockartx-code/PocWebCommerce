@@ -36,6 +36,65 @@ def parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
 
+def create_tenant(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
+    payload = parse_body(event)
+    tenant_id = payload.get("tenantId") or f"t-{uuid.uuid4().hex[:8]}"
+    admin_email = payload.get("adminEmail") or f"admin@{tenant_id}.example.com"
+    onboarding_token = uuid.uuid4().hex
+    backoffice_url = f"https://admin.poc-web-commerce.example/?tenantId={tenant_id}&token={onboarding_token}"
+    tenant = {
+        "tenantId": tenant_id,
+        "name": payload.get("name", "Nueva tienda"),
+        "industry": payload.get("industry", "retail"),
+        "status": "active",
+        "createdAt": datetime.utcnow().isoformat() + "Z",
+        "preferredCurrency": payload.get("currency", "USD"),
+        "paymentProvider": payload.get("paymentProvider", "mercadopago"),
+        "branding": payload.get("branding", {}),
+    }
+    admin_user = {
+        "userId": f"{tenant_id}#adm-{uuid.uuid4().hex[:6]}",
+        "email": admin_email,
+        "role": "admin",
+        "temporaryPassword": payload.get("temporaryPassword") or uuid.uuid4().hex[:12],
+        "loginUrl": backoffice_url,
+    }
+    urls = {
+        "storefront": f"https://{tenant_id}.poc-web-commerce.example",
+        "backoffice": backoffice_url,
+        "apiBase": f"https://api.poc-web-commerce.example/v1/{tenant_id}",
+    }
+    body = {
+        "tenant": tenant,
+        "adminUser": admin_user,
+        "urls": urls,
+        "onboardingToken": onboarding_token,
+    }
+    headers = {"X-Tenant-Id": tenant_id}
+    return 201, body, headers
+
+
+def create_tenant_user(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
+    tenant_id = params.get("tenantId") or "public"
+    payload = parse_body(event)
+    user = {
+        "userId": payload.get("userId") or f"{tenant_id}#usr-{uuid.uuid4().hex[:8]}",
+        "email": payload.get("email", "owner@example.com"),
+        "role": payload.get("role", "admin"),
+        "status": "invited",
+        "temporaryPassword": payload.get("temporaryPassword") or uuid.uuid4().hex[:12],
+        "createdAt": datetime.utcnow().isoformat() + "Z",
+    }
+    response = {
+        "tenantId": tenant_id,
+        "user": user,
+        "loginUrl": f"https://admin.poc-web-commerce.example/?tenantId={tenant_id}",
+        "support": "onboarding@poc-web-commerce.example",
+    }
+    headers = {"X-Tenant-Id": tenant_id}
+    return 201, response, headers
+
+
 def get_products(_: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
     tenant_id = params.get("tenantId", "public")
     products = [
@@ -187,6 +246,8 @@ def inject_tenant(event: Dict[str, Any], params: Dict[str, str]) -> Tuple[str | 
 
 
 ROUTES: Iterable[Route] = (
+    ("POST", re.compile(r"^/v1/tenants$"), create_tenant, False),
+    ("POST", re.compile(r"^/v1/tenants/(?P<tenantId>[^/]+)/users$"), create_tenant_user, False),
     ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/products$"), get_products, True),
     ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/products/(?P<productId>[^/]+)$"), get_product_by_id, True),
     ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/cart$"), create_cart, True),

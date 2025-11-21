@@ -16,6 +16,7 @@ import { RouterLink } from '@angular/router';
       <div class="mt-6 flex flex-wrap gap-3 text-sm">
         <a routerLink="/catalog" class="px-4 py-2 rounded-lg bg-indigo-500 text-white hover:bg-indigo-400 transition">Ver catálogo</a>
         <a routerLink="/auth" class="px-4 py-2 rounded-lg border border-indigo-400/60 text-indigo-200 hover:bg-indigo-500/10 transition">Colocar token Cognito</a>
+        <a routerLink="/wizard" class="px-4 py-2 rounded-lg border border-emerald-400/60 text-emerald-200 hover:bg-emerald-500/10 transition">Crear tenant</a>
         <a routerLink="/admin" class="px-4 py-2 rounded-lg border border-slate-700 text-slate-200 hover:bg-slate-800 transition">Entrar al back office</a>
       </div>
       <div class="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4 text-xs text-slate-300">
