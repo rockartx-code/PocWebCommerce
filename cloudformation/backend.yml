@@ -1,0 +1,286 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: API Gateway + Lambda (Python) para catálogo, carrito y pagos con Mercado Pago.
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    Description: Nombre del stage de API Gateway.
+  CognitoUserPoolArn:
+    Type: String
+    Description: ARN del User Pool para el authorizer JWT.
+  LambdaCodeS3Bucket:
+    Type: String
+    Description: Bucket con los artefactos ZIP de Lambda.
+  LambdaCodeS3Key:
+    Type: String
+    Description: Ruta del ZIP con el código de las funciones (usado por defecto).
+
+Resources:
+  ProductsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: productId
+          AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+      KeySchema:
+        - AttributeName: productId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: category-index
+          KeySchema:
+            - AttributeName: category
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TableName: !Sub '${AWS::StackName}-products'
+
+  InventoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: productId
+          AttributeType: S
+        - AttributeName: locationId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: productId
+          KeyType: HASH
+        - AttributeName: locationId
+          KeyType: RANGE
+      TableName: !Sub '${AWS::StackName}-inventory'
+
+  CartsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: itemId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: itemId
+          KeyType: RANGE
+      TableName: !Sub '${AWS::StackName}-carts'
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: orderId
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: userId-createdAt-index
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TableName: !Sub '${AWS::StackName}-orders'
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  OrderItemsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: orderId
+          AttributeType: S
+        - AttributeName: itemId
+          AttributeType: S
+        - AttributeName: productId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderId
+          KeyType: HASH
+        - AttributeName: itemId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: productId-index
+          KeySchema:
+            - AttributeName: productId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TableName: !Sub '${AWS::StackName}-order-items'
+
+  PaymentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: paymentId
+          AttributeType: S
+        - AttributeName: orderId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: paymentId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: orderId-index
+          KeySchema:
+            - AttributeName: orderId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TableName: !Sub '${AWS::StackName}-payments'
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BusinessAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt ProductsTable.Arn
+                  - !GetAtt InventoryTable.Arn
+                  - !GetAtt OrdersTable.Arn
+                  - !GetAtt OrderItemsTable.Arn
+                  - !GetAtt PaymentsTable.Arn
+                  - !GetAtt CartsTable.Arn
+                  - !Sub '${OrdersTable.Arn}/index/*'
+                  - !Sub '${OrderItemsTable.Arn}/index/*'
+                  - !Sub '${PaymentsTable.Arn}/index/*'
+                  - !Sub '${OrdersTable.Arn}/stream/*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - kms:Decrypt
+                Resource: '*'
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Handler: app.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          PRODUCTS_TABLE: !Ref ProductsTable
+          INVENTORY_TABLE: !Ref InventoryTable
+          ORDERS_TABLE: !Ref OrdersTable
+          ORDER_ITEMS_TABLE: !Ref OrderItemsTable
+          PAYMENTS_TABLE: !Ref PaymentsTable
+          CARTS_TABLE: !Ref CartsTable
+      Timeout: 30
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${AWS::StackName}-api'
+      EndpointConfiguration:
+        Types: [REGIONAL]
+
+  ApiAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: CognitoJWT
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      ProviderARNs:
+        - !Ref CognitoUserPoolArn
+      RestApiId: !Ref ApiGateway
+
+  ApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: v1
+      RestApiId: !Ref ApiGateway
+
+  ApiMethodProxy:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref ApiAuthorizer
+      HttpMethod: ANY
+      ResourceId: !Ref ApiResource
+      RestApiId: !Ref ApiGateway
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiMethodProxy
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: !Ref StageName
+      Description: Despliegue de la API principal.
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ApiFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*/*'
+
+Outputs:
+  ApiUrl:
+    Description: URL base del API Gateway.
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
+  ProductsTableName:
+    Description: Nombre de la tabla DynamoDB de productos.
+    Value: !Ref ProductsTable
+  InventoryTableName:
+    Description: Nombre de la tabla DynamoDB de inventario por ubicación.
+    Value: !Ref InventoryTable
+  OrdersTableName:
+    Description: Nombre de la tabla DynamoDB de órdenes.
+    Value: !Ref OrdersTable
+  OrderItemsTableName:
+    Description: Nombre de la tabla DynamoDB de ítems de orden.
+    Value: !Ref OrderItemsTable
+  PaymentsTableName:
+    Description: Nombre de la tabla DynamoDB de pagos de Mercado Pago.
+    Value: !Ref PaymentsTable
+  CartsTableName:
+    Description: Nombre de la tabla DynamoDB de carritos.
+    Value: !Ref CartsTable

@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /backoffice
+Disallow: /api
+
+# Sitemap: https://<tu-distribucion-cloudfront>/sitemap.xml

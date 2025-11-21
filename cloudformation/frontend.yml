@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Frontend estático para Angular 20 en S3 + CloudFront con OAI.
+
+Parameters:
+  SiteBucketName:
+    Type: String
+    Description: Nombre del bucket S3 donde se aloja el frontend Angular.
+  DomainName:
+    Type: String
+    Description: Dominio personalizado (ej. shop.example.com).
+  AcmCertificateArn:
+    Type: String
+    Description: ARN del certificado ACM en us-east-1 para CloudFront.
+
+Resources:
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref SiteBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  CloudFrontOAI:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: Acceso privado de CloudFront al bucket del sitio.
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontAccess
+            Effect: Allow
+            Principal:
+              CanonicalUser: !GetAtt CloudFrontOAI.S3CanonicalUserId
+            Action: 's3:GetObject'
+            Resource: !Sub '${SiteBucket.Arn}/*'
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: CDN para Angular + Tailwind
+        Aliases:
+          - !Ref DomainName
+        DefaultRootObject: index.html
+        Origins:
+          - DomainName: !GetAtt SiteBucket.RegionalDomainName
+            Id: SiteBucketOrigin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOAI}'
+        DefaultCacheBehavior:
+          TargetOriginId: SiteBucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          ForwardedValues:
+            QueryString: true
+            Headers: ['Origin']
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+
+Outputs:
+  BucketName:
+    Description: Bucket que aloja el frontend.
+    Value: !Ref SiteBucket
+  DistributionId:
+    Description: ID de la distribución CloudFront.
+    Value: !Ref Distribution
+  DistributionDomain:
+    Description: Dominio CDN del sitio.
+    Value: !GetAtt Distribution.DomainName
