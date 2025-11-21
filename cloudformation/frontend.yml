@@ -23,11 +23,27 @@ Parameters:
   AcmCertificateArn:
     Type: String
     Description: ARN del certificado ACM en us-east-1 para CloudFront.
+  DomainParameterName:
+    Type: String
+    Default: ''
+    Description: Nombre opcional del parámetro de SSM Parameter Store donde guardar el dominio del tenant.
+  WafWebAclArn:
+    Type: String
+    Default: ''
+    Description: ARN de WAF v2 para asociar a la distribución de CloudFront.
+  EnableShield:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: Habilita protección avanzada de AWS Shield sobre la distribución de CloudFront.
 
 Conditions:
   UseBaseDomain: !Not [!Equals [!Ref BaseDomainName, '']]
   HasDomainName: !Not [!Equals [!Ref DomainName, '']]
   CreateRecordSet: !And [!Condition UseBaseDomain, !Not [!Equals [!Ref HostedZoneId, '']]]
+  ShouldPersistDomain: !Not [!Equals [!Ref DomainParameterName, '']]
+  AttachWaf: !Not [!Equals [!Ref WafWebAclArn, '']]
+  EnableShieldProtection: !Equals [!Ref EnableShield, 'true']
 
 Resources:
   SiteBucket:
@@ -95,6 +111,20 @@ Resources:
           SslSupportMethod: sni-only
           MinimumProtocolVersion: TLSv1.2_2021
 
+  DistributionWafAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Condition: AttachWaf
+    Properties:
+      ResourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+      WebACLArn: !Ref WafWebAclArn
+
+  CloudFrontShieldProtection:
+    Type: AWS::Shield::Protection
+    Condition: EnableShieldProtection
+    Properties:
+      Name: !Sub '${AWS::StackName}-cdn-protection'
+      ResourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+
   TenantSubdomainRecord:
     Type: AWS::Route53::RecordSet
     Condition: CreateRecordSet
@@ -105,6 +135,15 @@ Resources:
       AliasTarget:
         DNSName: !GetAtt Distribution.DomainName
         HostedZoneId: Z2FDTNDATAQYW2
+
+  TenantDomainParameter:
+    Condition: ShouldPersistDomain
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref DomainParameterName
+      Type: String
+      Value: !If [UseBaseDomain, !Sub '${TenantId}.${BaseDomainName}', !Ref DomainName]
+      Description: Dominio resoluble que debe consumir el wizard para bootstrap del tenant.
 
 Outputs:
   BucketName:
@@ -119,3 +158,6 @@ Outputs:
   TenantDomain:
     Description: Dominio asociado al tenant (subdominio generado o dominio personalizado).
     Value: !If [UseBaseDomain, !Sub '${TenantId}.${BaseDomainName}', !Ref DomainName]
+  DomainParameterOutput:
+    Description: Nombre del parámetro de SSM donde se guarda el dominio final para consumir desde el wizard.
+    Value: !If [ShouldPersistDomain, !Ref TenantDomainParameter, '']
