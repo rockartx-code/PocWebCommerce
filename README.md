@@ -106,5 +106,15 @@ Estas tablas cubren catálogo, carrito, ordenes y conciliación de pagos; permit
 - Usar el SDK de Mercado Pago en modo sandbox durante el desarrollo.
 - Ejecutar pruebas unitarias de Lambdas con `pytest` y pruebas E2E del frontend con `ng e2e`.
 
+## Módulos de la aplicación web (Angular 20 + Tailwind)
+- **Landing** (`frontend/src/app/features/landing`): hero de onboarding que comunica la arquitectura serverless, botones de entrada a catálogo, back office y panel de autenticación, badges de integraciones (API Gateway, Cognito, CloudFront/S3, Mercado Pago).
+- **Catálogo** (`frontend/src/app/features/catalog`): grilla de productos con búsqueda reactiva, tarjetas con categoría/stock/precio, acciones para ver detalle y agregar al carrito. Mock local alineado al endpoint `GET /v1/products`.
+- **Detalle de producto** (`frontend/src/app/features/product`): ficha completa que ilustra el consumo de `GET /v1/products/{id}` y el disparo de `POST /v1/cart`; incluye tags, precio y bloque de integraciones.
+- **Carrito y checkout** (`frontend/src/app/features/cart`): resumen de ítems, edición de cantidades, borrado y cálculo de totales. Simula creación de orden y `paymentPreferenceId` para Mercado Pago vía `POST /v1/orders`.
+- **Analytics** (`frontend/src/app/features/analytics`): panel que representa `GET /v1/analytics/sales` con KPIs de ingresos, órdenes, conversión y top productos.
+- **Autenticación Cognito** (`frontend/src/app/features/auth`): gestor de Access Token JWT con persistencia en `localStorage`; expone el header `Authorization` para ser reutilizado por servicios HTTP.
+- **Back office** (`frontend/src/app/features/admin`): formulario CRUD simulado de catálogo/inventario protegido para admins; punto de partida para enlazar a endpoints seguros de catálogo, pedidos y conciliación de pagos.
+- **Servicios compartidos** (`frontend/src/app/shared`): `CatalogService`, `CartService`, `AuthService` y `AnalyticsService` modelan el consumo de la API serverless, estados de carrito y token Cognito.
+
 ## Licencia
 Este proyecto puede adaptarse según las políticas internas de tu organización. Asegúrate de revisar licencias de dependencias externas (Angular, Tailwind, SDKs de Mercado Pago).
