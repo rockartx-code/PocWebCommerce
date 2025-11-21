@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+# Sitemap: agregar la URL pública de CloudFront cuando esté disponible
