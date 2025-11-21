@@ -21,16 +21,38 @@ on:
         description: ARN del User Pool usado por el authorizer
         required: true
         type: string
+      cognitoDomainPrefix:
+        description: Prefijo personalizado para el dominio hospedado de Cognito (opcional)
+        required: false
+        default: ''
+        type: string
+      userPoolName:
+        description: Nombre explícito del User Pool (opcional)
+        required: false
+        default: ''
+        type: string
       lambdaCodeBucket:
         description: Bucket con el artefacto ZIP de Lambda
         required: true
         type: string
-      lambdaCodeKey:
-        description: Ruta del artefacto ZIP de Lambda
-        required: true
-        type: string
       frontendBucketName:
         description: Nombre del bucket del frontend (debe ser único a nivel global)
+        required: true
+        type: string
+      artifactBucket:
+        description: Bucket donde se subirán los artefactos construidos (Lambda y frontend)
+        required: true
+        type: string
+      callbackUrls:
+        description: Lista separada por comas de URLs de callback para Cognito
+        required: true
+        type: string
+      logoutUrls:
+        description: Lista separada por comas de URLs de logout para Cognito
+        required: true
+        type: string
+      mercadopagoAccessToken:
+        description: Token de producción/QA de Mercado Pago para el tenant
         required: true
         type: string
       acmCertificateArn:
@@ -52,6 +74,26 @@ on:
         required: false
         type: string
         default: ''
+      domainParameterName:
+        description: Nombre de SSM Parameter Store donde persistir el dominio del tenant
+        required: false
+        type: string
+        default: ''
+      apiWafArn:
+        description: WebACL ARN opcional para proteger el API Gateway
+        required: false
+        type: string
+        default: ''
+      cdnWafArn:
+        description: WebACL ARN opcional para proteger CloudFront
+        required: false
+        type: string
+        default: ''
+      enableShield:
+        description: Habilitar AWS Shield avanzado en API Gateway/CloudFront (true/false)
+        required: false
+        default: 'false'
+        type: string
 
 permissions:
   contents: read
@@ -63,6 +105,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ${{ inputs.awsRegion }}
+      LAMBDA_ARTIFACT_KEY: lambda/${{ inputs.tenantId }}/lambda-${{ github.sha }}.zip
+      FRONTEND_DIST_PATH: frontend/dist
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -73,7 +117,49 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ inputs.awsRegion }}
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build Angular frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build -- --configuration production
+
+      - name: Package Lambda
+        run: |
+          python -m pip install --upgrade pip
+          zip -r lambda.zip backend
+          aws s3 cp lambda.zip s3://${{ inputs.artifactBucket }}/${LAMBDA_ARTIFACT_KEY}
+
+      - name: Deploy Cognito stack (CloudFormation)
+        run: |
+          aws cloudformation deploy \
+            --stack-name pocweb-cognito-${{ inputs.tenantId }} \
+            --template-file cloudformation/cognito.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              TenantId=${{ inputs.tenantId }} \
+              UserPoolName="${{ inputs.userPoolName }}" \
+              CallbackUrls=${{ inputs.callbackUrls }} \
+              LogoutUrls=${{ inputs.logoutUrls }} \
+              CognitoDomainPrefix="${{ inputs.cognitoDomainPrefix }}"
+
+      - name: Capturar salidas de Cognito
+        run: |
+          USER_POOL_ARN=$(aws cloudformation describe-stacks --stack-name pocweb-cognito-${{ inputs.tenantId }} --query "Stacks[0].Outputs[?OutputKey=='UserPoolArn'].OutputValue" --output text)
+          echo "COGNITO_USER_POOL_ARN=$USER_POOL_ARN" >> $GITHUB_ENV
+
       - name: Deploy backend stack (CloudFormation)
+        env:
+          COGNITO_ARN: ${{ env.COGNITO_USER_POOL_ARN || inputs.cognitoUserPoolArn }}
         run: |
           aws cloudformation deploy \
             --stack-name pocweb-backend-${{ inputs.tenantId }} \
@@ -82,9 +168,18 @@ jobs:
             --parameter-overrides \
               TenantId=${{ inputs.tenantId }} \
               StageName=${{ inputs.stageName }} \
-              CognitoUserPoolArn=${{ inputs.cognitoUserPoolArn }} \
+              CognitoUserPoolArn=$COGNITO_ARN \
               LambdaCodeS3Bucket=${{ inputs.lambdaCodeBucket }} \
-              LambdaCodeS3Key=${{ inputs.lambdaCodeKey }}
+              LambdaCodeS3Key=${{ env.LAMBDA_ARTIFACT_KEY }} \
+              MercadoPagoAccessToken='${{ inputs.mercadopagoAccessToken }}' \
+              TenantDomain="${{ inputs.domainName }}" \
+              TenantDomainParameterName="${{ inputs.domainParameterName }}" \
+              WafWebAclArn="${{ inputs.apiWafArn }}" \
+              EnableShield=${{ inputs.enableShield }}
+
+      - name: Sync frontend artifacts
+        run: |
+          aws s3 sync ${FRONTEND_DIST_PATH}/ s3://${{ inputs.frontendBucketName }}/ --delete
 
       - name: Deploy frontend stack (CloudFormation)
         run: |
@@ -98,7 +193,10 @@ jobs:
               DomainName="${{ inputs.domainName }}" \
               BaseDomainName="${{ inputs.baseDomainName }}" \
               HostedZoneId="${{ inputs.hostedZoneId }}" \
-              AcmCertificateArn=${{ inputs.acmCertificateArn }}
+              AcmCertificateArn=${{ inputs.acmCertificateArn }} \
+              DomainParameterName="${{ inputs.domainParameterName }}" \
+              WafWebAclArn="${{ inputs.cdnWafArn }}" \
+              EnableShield=${{ inputs.enableShield }}
 
       - name: Registrar tenant en tabla central
         env:

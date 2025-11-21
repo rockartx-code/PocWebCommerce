@@ -12,6 +12,27 @@ Parameters:
   CognitoUserPoolArn:
     Type: String
     Description: ARN del User Pool para el authorizer JWT.
+  MercadoPagoAccessToken:
+    Type: String
+    NoEcho: true
+    Description: Token privado de Mercado Pago que se almacenará en Secrets Manager.
+  TenantDomain:
+    Type: String
+    Default: ''
+    Description: Dominio efectivo del tenant (usado para callbacks y metadata). Puede provenir de Parameter Store.
+  TenantDomainParameterName:
+    Type: String
+    Default: ''
+    Description: Nombre del parámetro de SSM donde se persiste el dominio del tenant.
+  WafWebAclArn:
+    Type: String
+    Default: ''
+    Description: ARN opcional de un WebACL de AWS WAF v2 para proteger la API.
+  EnableShield:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: Habilita la protección avanzada de AWS Shield para el endpoint de API Gateway.
   LambdaCodeS3Bucket:
     Type: String
     Description: Bucket con los artefactos ZIP de Lambda.
@@ -19,7 +40,26 @@ Parameters:
     Type: String
     Description: Ruta del ZIP con el código de las funciones (usado por defecto).
 
+Conditions:
+  AttachApiWaf: !Not [!Equals [!Ref WafWebAclArn, '']]
+  EnableShieldProtection: !Equals [!Ref EnableShield, 'true']
+  HasTenantDomainParam: !Not [!Equals [!Ref TenantDomainParameterName, '']]
+
 Resources:
+  ApiWafAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Condition: AttachApiWaf
+    Properties:
+      ResourceArn: !Sub 'arn:aws:apigateway:${AWS::Region}::/restapis/${ApiGateway}/stages/${StageName}'
+      WebACLArn: !Ref WafWebAclArn
+
+  ApiShieldProtection:
+    Type: AWS::Shield::Protection
+    Condition: EnableShieldProtection
+    Properties:
+      Name: !Sub '${AWS::StackName}-api-protection'
+      ResourceArn: !Sub 'arn:aws:apigateway:${AWS::Region}::/restapis/${ApiGateway}/stages/${StageName}'
+
   ProductsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -203,6 +243,22 @@ Resources:
         - Key: tenantId
           Value: !Ref TenantId
 
+  MercadoPagoSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'pocweb/${TenantId}/mercadopago/token'
+      Description: Token de acceso de Mercado Pago para el tenant.
+      SecretString: !Ref MercadoPagoAccessToken
+
+  TenantDomainParam:
+    Condition: HasTenantDomainParam
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref TenantDomainParameterName
+      Type: String
+      Value: !Ref TenantDomain
+      Description: Dominio efectivo del tenant utilizado por el backend y el frontend.
+
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -237,8 +293,12 @@ Resources:
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
+                  - ssm:GetParameter
                   - kms:Decrypt
-                Resource: '*'
+                Resource:
+                  - !Ref MercadoPagoSecret
+                  - !If [HasTenantDomainParam, !Ref TenantDomainParam, !Ref 'AWS::NoValue']
+                  - !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
 
   ApiFunction:
     Type: AWS::Lambda::Function
@@ -257,6 +317,9 @@ Resources:
           CARTS_TABLE: !Ref CartsTable
           TRANSACTIONS_TABLE: !Ref TransactionsTable
           TENANTS_TABLE: !Ref TenantsTable
+          MERCADOPAGO_SECRET_ARN: !Ref MercadoPagoSecret
+          TENANT_DOMAIN_PARAM: !If [HasTenantDomainParam, !Ref TenantDomainParam, '']
+          TENANT_DOMAIN: !Ref TenantDomain
       Timeout: 30
 
   ApiGateway:
@@ -485,3 +548,12 @@ Outputs:
   TenantsTableName:
     Description: Tabla central donde se almacena el estado y metadatos de cada tenant.
     Value: !Ref TenantsTable
+  MercadoPagoSecretArn:
+    Description: Secret en Secrets Manager con el token privado de Mercado Pago para el tenant.
+    Value: !Ref MercadoPagoSecret
+  TenantDomainParameterNameOutput:
+    Description: Nombre del parámetro en SSM Parameter Store donde se persiste el dominio del tenant.
+    Value: !If [HasTenantDomainParam, !Ref TenantDomainParam, '']
+  TenantDomainValue:
+    Description: Dominio que el backend utiliza para webhooks y callbacks.
+    Value: !Ref TenantDomain

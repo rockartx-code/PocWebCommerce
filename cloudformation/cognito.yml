@@ -2,22 +2,33 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: Cognito User Pool y App Client para frontend/back office con JWT.
 
 Parameters:
+  TenantId:
+    Type: String
+    Description: Identificador único del tenant para construir los nombres de recursos.
   UserPoolName:
     Type: String
-    Default: ecommerce-users
-    Description: Nombre del User Pool.
+    Default: ''
+    Description: Nombre del User Pool. Si se deja vacío se usará un nombre derivado del tenant.
   CallbackUrls:
     Type: CommaDelimitedList
     Description: URLs de callback (frontend y back office).
   LogoutUrls:
     Type: CommaDelimitedList
     Description: URLs de logout.
+  CognitoDomainPrefix:
+    Type: String
+    Default: ''
+    Description: Prefijo opcional para el dominio hospedado de Cognito. Si no se define se genera con el tenant.
+
+Conditions:
+  UseCustomPoolName: !Not [!Equals [!Ref UserPoolName, '']]
+  UseCustomDomainPrefix: !Not [!Equals [!Ref CognitoDomainPrefix, '']]
 
 Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: !Ref UserPoolName
+      UserPoolName: !If [UseCustomPoolName, !Ref UserPoolName, !Sub 'pocweb-${TenantId}-users']
       AutoVerifiedAttributes: [email]
       UsernameAttributes: [email]
       Policies:
@@ -40,7 +51,7 @@ Resources:
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
-      ClientName: web-client
+      ClientName: !Sub 'web-${TenantId}'
       UserPoolId: !Ref UserPool
       AllowedOAuthFlows: [code]
       AllowedOAuthScopes: [openid, email, profile]
@@ -59,7 +70,10 @@ Resources:
   UserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
     Properties:
-      Domain: !Sub '${AWS::StackName}-${AWS::AccountId}'
+      Domain: !If
+        - UseCustomDomainPrefix
+        - !Ref CognitoDomainPrefix
+        - !Sub '${TenantId}-${AWS::AccountId}'
       UserPoolId: !Ref UserPool
 
   AdminGroup:
@@ -86,3 +100,12 @@ Outputs:
   UserPoolArn:
     Description: ARN del User Pool para usar en el authorizer de API Gateway.
     Value: !GetAtt UserPool.Arn
+  UserPoolRegion:
+    Description: Región donde se creó el User Pool.
+    Value: !Ref AWS::Region
+  HostedDomain:
+    Description: Dominio asignado al Hosted UI de Cognito.
+    Value: !If [UseCustomDomainPrefix, !Ref CognitoDomainPrefix, !Sub '${TenantId}-${AWS::AccountId}']
+  HostedUiIssuer:
+    Description: Issuer URL que consumen las apps para validar JWT.
+    Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
