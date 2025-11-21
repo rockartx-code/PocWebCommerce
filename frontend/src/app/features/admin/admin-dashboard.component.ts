@@ -1,7 +1,8 @@
-import { Component, signal } from '@angular/core';
+import { Component, computed, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Product } from '../../shared/models';
+import { TenantContextService } from '../../shared/tenant-context.service';
 
 @Component({
   selector: 'app-admin-dashboard',
@@ -9,10 +10,12 @@ import { Product } from '../../shared/models';
   imports: [CommonModule, FormsModule],
   template: `
     <section class="space-y-4">
-      <div>
+      <div class="flex items-center justify-between">
         <p class="text-xs uppercase tracking-[0.3rem] text-indigo-300">Back office</p>
-        <h2 class="text-2xl font-semibold">Catálogo e inventario</h2>
-        <p class="text-sm text-slate-400">CRUD simulado que consumiría endpoints admins seguros.</p>
+        <div class="text-right">
+          <h2 class="text-2xl font-semibold">Catálogo e inventario</h2>
+          <p class="text-sm text-slate-400">Tenant activo: {{ activeTenantId() ?? 'sin contexto' }}</p>
+        </div>
       </div>
       <div class="grid md:grid-cols-2 gap-4">
         <form (ngSubmit)="save()" class="border border-slate-800 rounded-xl p-4 bg-slate-900/50 space-y-3">
@@ -53,6 +56,7 @@ import { Product } from '../../shared/models';
 })
 export class AdminDashboardComponent {
   products = signal<Product[]>([]);
+  activeTenantId = computed(() => this.tenantContext.tenantId());
   draft: Product = {
     id: crypto.randomUUID(),
     name: '',
@@ -64,6 +68,8 @@ export class AdminDashboardComponent {
     tags: [],
     images: ['https://placehold.co/600x400']
   };
+
+  constructor(private tenantContext: TenantContextService) {}
 
   save() {
     this.products.update((items) => [{ ...this.draft, id: crypto.randomUUID() }, ...items]);
