@@ -10,13 +10,16 @@ def setup_function():
 
 
 def build_admin_event(path: str, query: dict | None = None, claims: dict | None = None) -> dict:
+    claims_payload = {"exp": (date.today().toordinal() + 1) * 86400}
+    if claims:
+        claims_payload.update(claims)
     return {
         "path": path,
         "httpMethod": "GET",
         "headers": {},
         "body": None,
         "queryStringParameters": query or {},
-        "requestContext": {"authorizer": {"claims": claims or {}}},
+        "requestContext": {"authorizer": {"jwt": {"claims": claims_payload}}},
     }
 
 
@@ -26,7 +29,7 @@ def test_route_requires_super_admin_role():
     response = handler(event, {})
 
     assert response["statusCode"] == 403
-    assert "Super admin" in json.loads(response["body"]).get("message", "")
+    assert "Admin permissions" in json.loads(response["body"]).get("message", "")
 
 
 def test_usage_listing_applies_filters_and_pagination():
@@ -50,7 +53,7 @@ def test_usage_listing_applies_filters_and_pagination():
     event = build_admin_event(
         "/v1/admin/tenants/usage",
         query={"startDate": "2024-05-01", "endDate": "2024-05-02", "metrics": "requests,gmv", "pageSize": "1"},
-        claims={"roles": ["super_admin"]},
+        claims={"cognito:groups": ["admin"]},
     )
 
     response = handler(event, {})

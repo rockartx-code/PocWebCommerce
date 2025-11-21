@@ -1,20 +1,126 @@
 import json
+import os
 import re
+import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Iterable, List, Tuple
+
+import boto3
+from botocore.exceptions import ClientError
 
 from usage_tracker import tracker
 
 
 Headers = Dict[str, str]
 LambdaResponse = Tuple[int, Dict[str, Any], Headers]
-Route = Tuple[str, re.Pattern[str], Callable[[Dict[str, Any], Dict[str, str]], LambdaResponse], bool]
+Route = Tuple[
+    str,
+    re.Pattern[str],
+    Callable[[Dict[str, Any], Dict[str, str]], LambdaResponse],
+    bool,
+    bool,
+]
 
 
 MAX_PAYMENT_RETRIES = 3
-subscription_registry: Dict[str, Dict[str, Any]] = {}
-payment_registry: List[Dict[str, Any]] = []
+
+
+def _dynamodb_resource():
+    return boto3.resource("dynamodb", region_name=os.getenv("AWS_REGION", "us-east-1"))
+
+
+class DynamoRepository:
+    def __init__(self, table_env: str) -> None:
+        self.table_name = os.environ.get(table_env)
+        if not self.table_name:
+            raise RuntimeError(f"Missing DynamoDB table env var: {table_env}")
+        self.table = _dynamodb_resource().Table(self.table_name)
+
+    def put_item(self, item: Dict[str, Any]) -> None:
+        for attempt in range(3):
+            try:
+                self.table.put_item(Item=item)
+                return
+            except ClientError as exc:  # pragma: no cover - retried
+                if attempt >= 2:
+                    raise
+                time.sleep(0.1 * (2**attempt))
+
+    def get_item(self, key: Dict[str, Any]) -> Dict[str, Any] | None:
+        try:
+            response = self.table.get_item(Key=key)
+        except ClientError:
+            return None
+        return response.get("Item")
+
+    def query_by_tenant(self, tenant_id: str) -> List[Dict[str, Any]]:
+        try:
+            if tenant_id == "*":
+                response = self.table.scan()
+            else:
+                response = self.table.scan(
+                    FilterExpression="tenantId = :tenantId",
+                    ExpressionAttributeValues={":tenantId": tenant_id},
+                )
+        except ClientError:
+            return []
+        return response.get("Items", [])
+
+
+class TenantRepository(DynamoRepository):
+    def save(self, tenant: Dict[str, Any]) -> None:
+        onboarding_record = {"transactionId": f"{tenant['tenantId']}#onboarding", **tenant}
+        self.put_item(onboarding_record)
+
+
+class CartRepository(DynamoRepository):
+    def save(self, cart: Dict[str, Any]) -> None:
+        self.put_item(cart)
+
+    def get(self, cart_id: str) -> Dict[str, Any] | None:
+        return self.get_item({"cartId": cart_id})
+
+
+class OrderRepository(DynamoRepository):
+    def save(self, order: Dict[str, Any]) -> None:
+        self.put_item(order)
+
+    def get(self, order_id: str) -> Dict[str, Any] | None:
+        return self.get_item({"orderId": order_id})
+
+
+class SubscriptionRepository(DynamoRepository):
+    def __init__(self, table_env: str) -> None:
+        super().__init__(table_env)
+
+    def _subscription_key(self, tenant_id: str) -> Dict[str, Any]:
+        return {"transactionId": f"{tenant_id}#subscription"}
+
+    def get_subscription(self, tenant_id: str) -> Dict[str, Any]:
+        existing = self.get_item(self._subscription_key(tenant_id)) or {}
+        if existing:
+            return existing
+        now_iso = datetime.utcnow().isoformat() + "Z"
+        return {
+            "transactionId": f"{tenant_id}#subscription",
+            "tenantId": tenant_id,
+            "status": "active",
+            "retryAttempts": 0,
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+        }
+
+    def update_subscription(self, subscription: Dict[str, Any]) -> Dict[str, Any]:
+        subscription["updatedAt"] = datetime.utcnow().isoformat() + "Z"
+        self.put_item(subscription)
+        return subscription
+
+    def log_payment(self, receipt: Dict[str, Any]) -> None:
+        self.put_item(receipt)
+
+    def list_payments(self, tenant_id: str) -> List[Dict[str, Any]]:
+        return sorted(self.query_by_tenant(tenant_id), key=lambda item: item.get("receivedAt", ""))
 
 
 def build_response(status_code: int, body: Dict[str, Any], extra_headers: Headers | None = None) -> Dict[str, Any]:
@@ -43,33 +149,43 @@ def parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
 
-def extract_claims(event: Dict[str, Any]) -> Dict[str, Any]:
+def get_claims(event: Dict[str, Any]) -> Dict[str, Any]:
     request_context = event.get("requestContext") or {}
     authorizer = request_context.get("authorizer") or {}
-    claims = authorizer.get("claims") or {}
-    if claims:
-        return claims
     jwt_context = authorizer.get("jwt") or {}
-    return jwt_context.get("claims") or {}
+    return jwt_context.get("claims") or authorizer.get("claims") or {}
 
 
-def is_super_admin(event: Dict[str, Any]) -> bool:
-    claims = extract_claims(event)
-    role_claim = (
-        claims.get("role")
-        or claims.get("custom:role")
-        or claims.get("roles")
-        or claims.get("cognito:groups")
-    )
-    if not role_claim:
-        return False
-    if isinstance(role_claim, str):
-        normalized = {part.strip().lower() for part in re.split(r"[,\s]", role_claim) if part.strip()}
-        return "super-admin" in normalized or "super_admin" in normalized
-    if isinstance(role_claim, Iterable):
-        normalized = {str(item).strip().lower() for item in role_claim}
-        return "super-admin" in normalized or "super_admin" in normalized
-    return False
+class AuthError(Exception):
+    def __init__(self, status_code: int, message: str, *, details: Dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.details = details or {}
+
+
+def validate_token(event: Dict[str, Any]) -> Dict[str, Any]:
+    claims = get_claims(event)
+    if not claims:
+        raise AuthError(401, "Missing authorization context")
+
+    exp = claims.get("exp")
+    now = datetime.utcnow().timestamp()
+    if exp and float(exp) <= now:
+        refresh_token = (event.get("headers") or {}).get("X-Refresh-Token")
+        message = "Token expired. Refresh required."
+        details = {"refreshTokenProvided": bool(refresh_token)}
+        raise AuthError(401, message, details=details)
+
+    return claims
+
+
+def require_admin(claims: Dict[str, Any]) -> None:
+    roles = claims.get("cognito:groups") or claims.get("roles") or []
+    if isinstance(roles, str):
+        roles = [role.strip() for role in roles.split(",") if role.strip()]
+    normalized = {str(role).lower() for role in roles}
+    if "admin" not in normalized and "super_admin" not in normalized:
+        raise AuthError(403, "Admin permissions required")
 
 
 def record_usage_event(
@@ -90,43 +206,23 @@ def record_usage_event(
     )
 
 
-def ensure_subscription(tenant_id: str, plan_id: str | None = None) -> Dict[str, Any]:
-    subscription = subscription_registry.get(tenant_id)
-    now_iso = datetime.utcnow().isoformat() + "Z"
-    if not subscription:
-        subscription = {
-            "subscriptionId": f"{tenant_id}#sub-{uuid.uuid4().hex[:8]}",
-            "tenantId": tenant_id,
-            "planId": plan_id or "standard",
-            "status": "active",
-            "preferenceId": None,
-            "nextBillingAt": (datetime.utcnow() + timedelta(days=30)).isoformat() + "Z",
-            "retryAttempts": 0,
-            "updatedAt": now_iso,
-            "createdAt": now_iso,
-        }
-        subscription_registry[tenant_id] = subscription
-    elif plan_id:
-        subscription["planId"] = plan_id
-    return subscription
+tenant_repository: TenantRepository | None = None
+cart_repository: CartRepository | None = None
+order_repository: OrderRepository | None = None
+subscription_repository: SubscriptionRepository | None = None
 
 
-def log_payment(tenant_id: str, resource_id: str, status: str, amount: float | None, currency: str | None) -> Dict[str, Any]:
-    receipt = {
-        "receivedAt": datetime.utcnow().isoformat() + "Z",
-        "resourceId": resource_id,
-        "status": status,
-        "tenantId": tenant_id,
-        "amount": amount,
-        "currency": currency or "USD",
-    }
-    payment_registry.append(receipt)
-    return receipt
-
-
-def update_subscription_status(subscription: Dict[str, Any], status: str) -> None:
-    subscription["status"] = status
-    subscription["updatedAt"] = datetime.utcnow().isoformat() + "Z"
+def _get_repositories() -> Tuple[TenantRepository, CartRepository, OrderRepository, SubscriptionRepository]:
+    global tenant_repository, cart_repository, order_repository, subscription_repository
+    if tenant_repository is None:
+        tenant_repository = TenantRepository("TRANSACTIONS_TABLE")
+    if cart_repository is None:
+        cart_repository = CartRepository("CARTS_TABLE")
+    if order_repository is None:
+        order_repository = OrderRepository("ORDERS_TABLE")
+    if subscription_repository is None:
+        subscription_repository = SubscriptionRepository("TRANSACTIONS_TABLE")
+    return tenant_repository, cart_repository, order_repository, subscription_repository
 
 
 def process_payment_status(
@@ -136,31 +232,43 @@ def process_payment_status(
     amount: float | None,
     currency: str | None,
 ) -> Dict[str, Any]:
-    subscription = ensure_subscription(tenant_id)
-    receipt = log_payment(tenant_id, resource_id, status, amount, currency)
-
+    _, _, _, subscriptions = _get_repositories()
+    subscription = subscriptions.get_subscription(tenant_id)
     normalized_status = status.lower()
     successful_statuses = {"approved", "authorized"}
     pending_statuses = {"in_process", "pending"}
 
     if normalized_status in successful_statuses:
         subscription["retryAttempts"] = 0
-        update_subscription_status(subscription, "active")
+        subscription["status"] = "active"
         subscription["nextBillingAt"] = (datetime.utcnow() + timedelta(days=30)).isoformat() + "Z"
     elif normalized_status in pending_statuses:
-        update_subscription_status(subscription, "pending")
+        subscription["status"] = "pending"
     else:
         subscription["retryAttempts"] = subscription.get("retryAttempts", 0) + 1
+        subscription["status"] = "retrying"
         if subscription["retryAttempts"] >= MAX_PAYMENT_RETRIES:
-            update_subscription_status(subscription, "suspended")
+            subscription["status"] = "suspended"
             subscription["suspendedReason"] = "payment_failed"
-        else:
-            update_subscription_status(subscription, "retrying")
 
+    subscriptions.update_subscription(subscription)
+
+    transaction_id = resource_id if resource_id.startswith(tenant_id) else f"{tenant_id}#{resource_id}"
+    receipt = {
+        "transactionId": transaction_id,
+        "receivedAt": datetime.utcnow().isoformat() + "Z",
+        "resourceId": resource_id,
+        "status": status,
+        "tenantId": tenant_id,
+        "amount": amount,
+        "currency": currency or "USD",
+    }
+    subscriptions.log_payment(receipt)
     return receipt
 
 
 def create_tenant(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
+    tenants, _, _, _ = _get_repositories()
     payload = parse_body(event)
     tenant_id = payload.get("tenantId") or f"t-{uuid.uuid4().hex[:8]}"
     admin_email = payload.get("adminEmail") or f"admin@{tenant_id}.example.com"
@@ -194,6 +302,7 @@ def create_tenant(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
         "urls": urls,
         "onboardingToken": onboarding_token,
     }
+    tenants.save({"tenantId": tenant_id, **tenant, "onboardingToken": onboarding_token})
     headers = {"X-Tenant-Id": tenant_id}
     record_usage_event(event, tenant_id, requests=1)
     return 201, body, headers
@@ -203,8 +312,9 @@ def create_subscription_checkout(event: Dict[str, Any], params: Dict[str, str]) 
     tenant_id = params.get("tenantId", "public")
     payload = parse_body(event)
     plan_id = payload.get("planId") or "standard"
-    subscription = ensure_subscription(tenant_id, plan_id)
-    subscription_id = payload.get("subscriptionId") or subscription.get("subscriptionId")
+    _, _, _, subscriptions = _get_repositories()
+    subscription = subscriptions.get_subscription(tenant_id)
+    subscription_id = payload.get("subscriptionId") or subscription.get("subscriptionId") or f"{tenant_id}#sub-{uuid.uuid4().hex[:8]}"
     preference_id = f"{tenant_id}#pref-sub-{uuid.uuid4().hex[:8]}"
 
     subscription.update(
@@ -217,6 +327,7 @@ def create_subscription_checkout(event: Dict[str, Any], params: Dict[str, str]) 
             "updatedAt": datetime.utcnow().isoformat() + "Z",
         }
     )
+    subscriptions.update_subscription(subscription)
 
     checkout = {
         "tenantId": tenant_id,
@@ -303,45 +414,51 @@ def get_product_by_id(event: Dict[str, Any], params: Dict[str, str]) -> LambdaRe
 
 
 def create_cart(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
+    _, carts, _, _ = _get_repositories()
     payload = parse_body(event)
     tenant_id = params.get("tenantId", "public")
     items = payload.get("items", [])
     cart_id = payload.get("cartId") or f"{tenant_id}#cart-{uuid.uuid4().hex[:8]}"
     totals = sum(item.get("price", 0) * item.get("quantity", 1) for item in items)
-    expires_at = (datetime.utcnow() + timedelta(hours=2)).isoformat() + "Z"
+    expires_at = datetime.utcnow() + timedelta(hours=2)
     cart = {
         "tenantId": tenant_id,
         "cartId": cart_id,
         "items": items,
         "totals": {"amount": round(totals, 2), "currency": payload.get("currency", "USD")},
-        "expiresAt": expires_at,
+        "expiresAt": expires_at.isoformat() + "Z",
+        "ttl": int(expires_at.timestamp()),
     }
+    carts.save(cart)
     record_usage_event(event, tenant_id, requests=1, gmv=totals)
     return 201, cart, {}
 
 
 def get_cart(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
+    _, carts, _, _ = _get_repositories()
     user_id = (event.get("queryStringParameters") or {}).get("userId", "guest")
     tenant_id = params.get("tenantId", "public")
-    cart = {
-        "tenantId": tenant_id,
-        "cartId": f"{tenant_id}#cart-{user_id}",
-        "items": [
-            {"productId": "prd-001", "quantity": 1, "price": 19.99},
-            {"productId": "prd-002", "quantity": 2, "price": 89.9},
-        ],
-        "totals": {"amount": 199.79, "currency": "USD"},
-        "userId": user_id,
-    }
+    cart_id = f"{tenant_id}#cart-{user_id}"
+    cart = carts.get(cart_id)
+    if not cart:
+        cart = {
+            "tenantId": tenant_id,
+            "cartId": cart_id,
+            "items": [],
+            "totals": {"amount": 0.0, "currency": "USD"},
+            "userId": user_id,
+        }
     record_usage_event(event, tenant_id, requests=1)
     return 200, cart, {}
 
 
 def create_order(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
+    _, _, orders, _ = _get_repositories()
     payload = parse_body(event)
     tenant_id = params.get("tenantId", "public")
     order_id = f"{tenant_id}#ord-{uuid.uuid4().hex[:10]}"
     preference_id = f"{tenant_id}#pref-{uuid.uuid4().hex[:6]}"
+    now_iso = datetime.utcnow().isoformat() + "Z"
     order = {
         "tenantId": tenant_id,
         "orderId": order_id,
@@ -351,7 +468,10 @@ def create_order(event: Dict[str, Any], params: Dict[str, str]) -> LambdaRespons
         "paymentPreferenceId": preference_id,
         "paymentStatus": "pending",
         "status": "created",
+        "createdAt": now_iso,
+        "updatedAt": now_iso,
     }
+    orders.save(order)
     headers = {"X-MercadoPago-Preference": preference_id}
     record_usage_event(event, tenant_id, requests=1, orders=1, gmv=payload.get("amount", 0))
     return 201, order, headers
@@ -366,17 +486,14 @@ def handle_mercadopago_webhook(event: Dict[str, Any], params: Dict[str, str]) ->
 
     if notification_type.startswith("subscription"):
         plan_id = data.get("planId") or data.get("plan_id") or payload.get("planId")
-        subscription = ensure_subscription(tenant_id, plan_id)
-        subscription_status = data.get("status") or payload.get("status") or subscription.get("status", "active")
-        update_subscription_status(subscription, subscription_status)
-        receipt = {
-            "receivedAt": datetime.utcnow().isoformat() + "Z",
-            "resourceId": resource_id,
-            "notificationType": notification_type,
-            "status": subscription_status,
-            "tenantId": tenant_id,
-            "planId": subscription.get("planId"),
-        }
+        receipt = process_payment_status(
+            tenant_id,
+            resource_id,
+            data.get("status") or payload.get("status") or "pending",
+            data.get("amount"),
+            data.get("currency"),
+        )
+        receipt.update({"notificationType": notification_type, "planId": plan_id})
     else:
         payment_status = data.get("status") or payload.get("status") or "pending"
         amount = data.get("transaction_amount") or data.get("amount")
@@ -406,28 +523,30 @@ def get_sales_analytics(_: Dict[str, Any], params: Dict[str, str]) -> LambdaResp
 
 
 def get_billing_status(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
+    _, _, _, subscriptions = _get_repositories()
     tenant_id = params.get("tenantId", "public")
-    subscription = subscription_registry.get(tenant_id)
-    if not subscription:
-        return 404, {"message": "Subscription not found", "tenantId": tenant_id}, {}
-
-    payments = [p for p in payment_registry if p.get("tenantId") == tenant_id]
+    subscription = subscriptions.get_subscription(tenant_id)
+    payments = subscriptions.list_payments(tenant_id)[-10:]
     response = {
         "tenantId": tenant_id,
         "subscription": subscription,
-        "recentPayments": payments[-10:],
+        "recentPayments": payments,
     }
     record_usage_event(event, tenant_id, requests=1)
     return 200, response, {}
 
 
 def list_billing_status(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
-    if not is_super_admin(event):
-        return 403, {"message": "Super admin role required"}, {}
+    _, _, _, subscriptions = _get_repositories()
+    claims = validate_token(event)
+    require_admin(claims)
 
     tenants: List[Dict[str, Any]] = []
-    for tenant_id, subscription in subscription_registry.items():
-        last_payment = next((p for p in reversed(payment_registry) if p.get("tenantId") == tenant_id), None)
+    all_records = subscriptions.query_by_tenant(tenant_id="*")  # type: ignore[arg-type]
+    tenant_ids = {rec.get("tenantId") for rec in all_records if rec.get("tenantId")}
+    for tenant_id in tenant_ids:
+        subscription = subscriptions.get_subscription(str(tenant_id))
+        last_payment = next((p for p in reversed(subscriptions.list_payments(str(tenant_id))) if p.get("tenantId") == tenant_id), None)
         tenants.append(
             {
                 "tenantId": tenant_id,
@@ -441,8 +560,8 @@ def list_billing_status(event: Dict[str, Any], _: Dict[str, str]) -> LambdaRespo
 
 
 def list_tenant_usage(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
-    if not is_super_admin(event):
-        return 403, {"message": "Super admin role required"}, {}
+    claims = validate_token(event)
+    require_admin(claims)
 
     params = event.get("queryStringParameters") or {}
     start_date = params.get("startDate")
@@ -502,9 +621,7 @@ def list_tenant_usage(event: Dict[str, Any], _: Dict[str, str]) -> LambdaRespons
     return 200, body, {}
 
 
-def extract_tenant_id(event: Dict[str, Any]) -> str | None:
-    authorizer = (event.get("requestContext") or {}).get("authorizer") or {}
-    claims = authorizer.get("claims") or (authorizer.get("jwt") or {}).get("claims") or {}
+def extract_tenant_id_from_claims(claims: Dict[str, Any]) -> str | None:
     tenant_id = (
         claims.get("custom:tenantId")
         or claims.get("tenantId")
@@ -517,9 +634,9 @@ def extract_tenant_id(event: Dict[str, Any]) -> str | None:
 
 
 def inject_tenant(
-    event: Dict[str, Any], params: Dict[str, str], *, allow_cross_tenant: bool = False
+    event: Dict[str, Any], params: Dict[str, str], *, claims: Dict[str, Any]
 ) -> Tuple[str | None, Dict[str, Any], Dict[str, str], str | None]:
-    tenant_id = extract_tenant_id(event)
+    tenant_claim = extract_tenant_id_from_claims(claims)
     path_tenant = (
         params.get("tenantId")
         or (event.get("pathParameters") or {}).get("tenantId")
@@ -527,9 +644,15 @@ def inject_tenant(
         or (event.get("headers") or {}).get("x-tenant-id")
     )
 
-    resolved_tenant = tenant_id
-    if path_tenant and (allow_cross_tenant or not resolved_tenant):
-        resolved_tenant = path_tenant
+    allowed = claims.get("allowedTenants") or []
+    if isinstance(allowed, str):
+        allowed = [tenant.strip() for tenant in allowed.split(",") if tenant.strip()]
+
+    resolved_tenant = path_tenant or tenant_claim
+    if not resolved_tenant:
+        raise AuthError(401, "Missing tenantId claim")
+    if path_tenant and allowed and path_tenant not in allowed and path_tenant != tenant_claim:
+        raise AuthError(403, "Tenant not allowed by policy")
 
     event_with_tenant = {**event, "tenantId": resolved_tenant}
     params_with_tenant = {**params}
@@ -539,24 +662,31 @@ def inject_tenant(
 
 
 ROUTES: Iterable[Route] = (
-    ("POST", re.compile(r"^/v1/tenants$"), create_tenant, False),
-    ("POST", re.compile(r"^/v1/tenants/(?P<tenantId>[^/]+)/users$"), create_tenant_user, False),
-    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/products$"), get_products, True),
-    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/products/(?P<productId>[^/]+)$"), get_product_by_id, True),
-    ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/cart$"), create_cart, True),
-    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/cart$"), get_cart, True),
-    ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/orders$"), create_order, True),
+    ("POST", re.compile(r"^/v1/tenants$"), create_tenant, False, False),
+    ("POST", re.compile(r"^/v1/tenants/(?P<tenantId>[^/]+)/users$"), create_tenant_user, True, True),
+    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/products$"), get_products, True, True),
+    (
+        "GET",
+        re.compile(r"^/v1/(?P<tenantId>[^/]+)/products/(?P<productId>[^/]+)$"),
+        get_product_by_id,
+        True,
+        True,
+    ),
+    ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/cart$"), create_cart, True, True),
+    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/cart$"), get_cart, True, True),
+    ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/orders$"), create_order, True, True),
     (
         "POST",
         re.compile(r"^/v1/(?P<tenantId>[^/]+)/subscriptions/checkout$"),
         create_subscription_checkout,
         True,
+        True,
     ),
-    ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/webhooks/mercadopago$"), handle_mercadopago_webhook, False),
-    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/analytics/sales$"), get_sales_analytics, True),
-    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/billing$"), get_billing_status, True),
-    ("GET", re.compile(r"^/v1/admin/tenants/usage$"), list_tenant_usage, False),
-    ("GET", re.compile(r"^/v1/admin/tenants/billing$"), list_billing_status, False),
+    ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/webhooks/mercadopago$"), handle_mercadopago_webhook, False, False),
+    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/analytics/sales$"), get_sales_analytics, True, True),
+    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/billing$"), get_billing_status, True, True),
+    ("GET", re.compile(r"^/v1/admin/tenants/usage$"), list_tenant_usage, True, False),
+    ("GET", re.compile(r"^/v1/admin/tenants/billing$"), list_billing_status, True, False),
 )
 
 
@@ -564,23 +694,28 @@ def route_event(event: Dict[str, Any]) -> Dict[str, Any]:
     path = event.get("path", "")
     http_method = event.get("httpMethod", "")
 
-    for method, pattern, handler, requires_tenant in ROUTES:
+    for method, pattern, handler, requires_auth, requires_tenant in ROUTES:
         if http_method != method:
             continue
         match = pattern.match(path)
         if not match:
             continue
         params = match.groupdict()
+        claims: Dict[str, Any] = {}
+        if requires_auth:
+            try:
+                claims = validate_token(event)
+            except AuthError as exc:
+                return build_response(exc.status_code, {"message": str(exc), **exc.details})
         if requires_tenant:
-            is_super = is_super_admin(event)
-            tenant_id, event, params, path_tenant = inject_tenant(
-                event, params, allow_cross_tenant=is_super
-            )
-            if not tenant_id:
-                return build_response(401, {"message": "Missing tenantId claim"})
-            if path_tenant and path_tenant != tenant_id and not is_super:
-                return build_response(403, {"message": "Tenant mismatch"})
-        status_code, payload, headers = handler(event, params)
+            try:
+                tenant_id, event, params, path_tenant = inject_tenant(event, params, claims=claims)
+            except AuthError as exc:
+                return build_response(exc.status_code, {"message": str(exc), **exc.details})
+        try:
+            status_code, payload, headers = handler(event, params)
+        except AuthError as exc:
+            return build_response(exc.status_code, {"message": str(exc), **exc.details})
         return build_response(status_code, payload, headers)
 
     return build_response(404, {"message": "Resource not found", "path": path})
