@@ -20,9 +20,7 @@ def aggregate_daily_usage(for_date: date | None = None) -> Iterable[UsageRecord]
     period = target_date.isoformat()
 
     totals: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
-    for event in tracker.get_raw_events():
-        if event.period != period:
-            continue
+    for event in tracker.get_raw_events(for_period=period):
         usage = event.usage
         for key in ("requests", "orders", "gmv", "bytes"):
             totals[event.tenantId][key] += float(usage.get(key, 0))

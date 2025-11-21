@@ -203,6 +203,12 @@ def record_usage_event(
         orders=orders,
         gmv=gmv,
         bytes_consumed=body_size,
+        metadata={
+            "path": event.get("path", ""),
+            "method": event.get("httpMethod", ""),
+            "userAgent": (event.get("headers") or {}).get("User-Agent", ""),
+            "sourceIp": (event.get("requestContext") or {}).get("identity", {}).get("sourceIp", ""),
+        },
     )
 
 
@@ -621,6 +627,67 @@ def list_tenant_usage(event: Dict[str, Any], _: Dict[str, str]) -> LambdaRespons
     return 200, body, {}
 
 
+def export_usage_metrics(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
+    claims = validate_token(event)
+    require_admin(claims)
+
+    params = event.get("queryStringParameters") or {}
+    metrics = [m for m in (params.get("metrics") or "").split(",") if m] or ["tenantId", "period", "requests", "orders", "gmv", "bytes"]
+
+    rows = [metrics]
+    for record in tracker.get_aggregates():
+        row = []
+        for metric in metrics:
+            if metric == "tenantId":
+                row.append(record.tenantId)
+            elif metric == "period":
+                row.append(record.period)
+            else:
+                row.append(str(record.usage.get(metric, 0)))
+        rows.append(row)
+
+    csv_body = "\n".join([",".join(map(str, row)) for row in rows])
+    headers = {
+        "Content-Type": "text/csv",
+        "Content-Disposition": "attachment; filename=tenant-usage.csv",
+    }
+    return 200, {"data": csv_body, "rows": len(rows) - 1}, headers
+
+
+def get_tenant_usage(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
+    tenant_id = params.get("tenantId") or event.get("tenantId")
+    if not tenant_id:
+        return 401, {"message": "Missing tenant context"}, {}
+    start = (event.get("queryStringParameters") or {}).get("startDate")
+    end = (event.get("queryStringParameters") or {}).get("endDate")
+
+    try:
+        start_date_obj = datetime.fromisoformat(start).date() if start else None
+        end_date_obj = datetime.fromisoformat(end).date() if end else None
+    except ValueError:
+        return 400, {"message": "Invalid date format. Use YYYY-MM-DD."}, {}
+
+    records = []
+    for record in tracker.get_aggregates():
+        if record.tenantId != tenant_id:
+            continue
+        period_date = datetime.fromisoformat(record.period).date()
+        if start_date_obj and period_date < start_date_obj:
+            continue
+        if end_date_obj and period_date > end_date_obj:
+            continue
+        records.append(record)
+
+    summary = {"requests": 0.0, "orders": 0.0, "gmv": 0.0, "bytes": 0.0}
+    history = []
+    for rec in sorted(records, key=lambda r: r.period, reverse=True):
+        for metric in summary:
+            summary[metric] += float(rec.usage.get(metric, 0))
+        history.append({"period": rec.period, "usage": rec.usage, "createdAt": rec.createdAt})
+
+    return 200, {"tenantId": tenant_id, "summary": summary, "history": history}, {"X-Tenant-Id": tenant_id}
+
+
 def extract_tenant_id_from_claims(claims: Dict[str, Any]) -> str | None:
     tenant_id = (
         claims.get("custom:tenantId")
@@ -684,8 +751,10 @@ ROUTES: Iterable[Route] = (
     ),
     ("POST", re.compile(r"^/v1/(?P<tenantId>[^/]+)/webhooks/mercadopago$"), handle_mercadopago_webhook, False, False),
     ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/analytics/sales$"), get_sales_analytics, True, True),
+    ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/usage$"), get_tenant_usage, True, True),
     ("GET", re.compile(r"^/v1/(?P<tenantId>[^/]+)/billing$"), get_billing_status, True, True),
     ("GET", re.compile(r"^/v1/admin/tenants/usage$"), list_tenant_usage, True, False),
+    ("GET", re.compile(r"^/v1/admin/tenants/usage/export$"), export_usage_metrics, True, False),
     ("GET", re.compile(r"^/v1/admin/tenants/billing$"), list_billing_status, True, False),
 )
 

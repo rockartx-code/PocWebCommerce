@@ -7,13 +7,19 @@ export const API_ROUTES = {
   cart: (tenantId: string) => `/v1/${tenantId}/cart`,
   orders: (tenantId: string) => `/v1/${tenantId}/orders`,
   analytics: (tenantId: string) => `/v1/${tenantId}/analytics/sales`,
+  tenantUsage: (tenantId: string) => `/v1/${tenantId}/usage`,
+  tenantBilling: (tenantId: string) => `/v1/${tenantId}/billing`,
   mercadopagoWebhook: (tenantId: string) => `/v1/${tenantId}/webhooks/mercadopago`,
-  adminUsage: '/v1/admin/tenants/usage'
+  adminUsage: '/v1/admin/tenants/usage',
+  adminUsageExport: '/v1/admin/tenants/usage/export',
+  adminBilling: '/v1/admin/tenants/billing'
 };
 
 export const ROUTES_REQUIRING_TENANT = new Set([
   API_ROUTES.products,
   API_ROUTES.cart,
   API_ROUTES.orders,
-  API_ROUTES.analytics
+  API_ROUTES.analytics,
+  API_ROUTES.tenantUsage,
+  API_ROUTES.tenantBilling
 ]);
