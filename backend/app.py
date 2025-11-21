@@ -4,6 +4,8 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Iterable, Tuple
 
+from usage_tracker import tracker
+
 
 Headers = Dict[str, str]
 LambdaResponse = Tuple[int, Dict[str, Any], Headers]
@@ -34,6 +36,24 @@ def parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
         return json.loads(raw_body)
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+def record_usage_event(
+    event: Dict[str, Any],
+    tenant_id: str,
+    *,
+    requests: int = 0,
+    orders: int = 0,
+    gmv: float = 0.0,
+) -> None:
+    body_size = len((event.get("body") or "").encode())
+    tracker.record_usage(
+        tenant_id=tenant_id,
+        requests=requests,
+        orders=orders,
+        gmv=gmv,
+        bytes_consumed=body_size,
+    )
 
 
 def create_tenant(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
@@ -71,6 +91,7 @@ def create_tenant(event: Dict[str, Any], _: Dict[str, str]) -> LambdaResponse:
         "onboardingToken": onboarding_token,
     }
     headers = {"X-Tenant-Id": tenant_id}
+    record_usage_event(event, tenant_id, requests=1)
     return 201, body, headers
 
 
@@ -92,6 +113,7 @@ def create_tenant_user(event: Dict[str, Any], params: Dict[str, str]) -> LambdaR
         "support": "onboarding@poc-web-commerce.example",
     }
     headers = {"X-Tenant-Id": tenant_id}
+    record_usage_event(event, tenant_id, requests=1)
     return 201, response, headers
 
 
@@ -119,6 +141,7 @@ def get_products(_: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
             "assetPrefix": f"s3://commerce-assets/{tenant_id}/products/prd-002",
         },
     ]
+    record_usage_event({}, tenant_id, requests=1)
     return 200, {"items": products, "count": len(products)}, {}
 
 
@@ -135,6 +158,7 @@ def get_product_by_id(event: Dict[str, Any], params: Dict[str, str]) -> LambdaRe
         "stock": 8,
         "assetPrefix": f"s3://commerce-assets/{tenant_id}/products/{product_id}",
     }
+    record_usage_event(event, tenant_id, requests=1)
     return 200, product, {}
 
 
@@ -152,6 +176,7 @@ def create_cart(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse
         "totals": {"amount": round(totals, 2), "currency": payload.get("currency", "USD")},
         "expiresAt": expires_at,
     }
+    record_usage_event(event, tenant_id, requests=1, gmv=totals)
     return 201, cart, {}
 
 
@@ -168,6 +193,7 @@ def get_cart(event: Dict[str, Any], params: Dict[str, str]) -> LambdaResponse:
         "totals": {"amount": 199.79, "currency": "USD"},
         "userId": user_id,
     }
+    record_usage_event(event, tenant_id, requests=1)
     return 200, cart, {}
 
 
@@ -187,6 +213,7 @@ def create_order(event: Dict[str, Any], params: Dict[str, str]) -> LambdaRespons
         "status": "created",
     }
     headers = {"X-MercadoPago-Preference": preference_id}
+    record_usage_event(event, tenant_id, requests=1, orders=1, gmv=payload.get("amount", 0))
     return 201, order, headers
 
 
@@ -202,6 +229,7 @@ def handle_mercadopago_webhook(event: Dict[str, Any], params: Dict[str, str]) ->
         "status": "acknowledged",
         "tenantId": tenant_id,
     }
+    record_usage_event(event, tenant_id, requests=1)
     return 200, receipt, {}
 
 
@@ -218,6 +246,7 @@ def get_sales_analytics(_: Dict[str, Any], params: Dict[str, str]) -> LambdaResp
         ],
         "paymentStatus": {"approved": 162, "pending": 9, "rejected": 7},
     }
+    record_usage_event({}, tenant_id, requests=1)
     return 200, metrics, {}
 
 
