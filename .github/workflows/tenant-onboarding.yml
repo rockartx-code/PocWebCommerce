@@ -1,0 +1,128 @@
+name: Tenant onboarding
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenantId:
+        description: Identificador del tenant (slug único)
+        required: true
+        type: string
+      stageName:
+        description: Stage de la API (prod, staging, etc.)
+        default: prod
+        required: true
+        type: string
+      awsRegion:
+        description: Región donde se desplegarán los recursos
+        default: us-east-1
+        required: true
+        type: string
+      cognitoUserPoolArn:
+        description: ARN del User Pool usado por el authorizer
+        required: true
+        type: string
+      lambdaCodeBucket:
+        description: Bucket con el artefacto ZIP de Lambda
+        required: true
+        type: string
+      lambdaCodeKey:
+        description: Ruta del artefacto ZIP de Lambda
+        required: true
+        type: string
+      frontendBucketName:
+        description: Nombre del bucket del frontend (debe ser único a nivel global)
+        required: true
+        type: string
+      acmCertificateArn:
+        description: Certificado ACM en us-east-1 para CloudFront
+        required: true
+        type: string
+      domainName:
+        description: Dominio completo opcional (ej. shop.example.com)
+        required: false
+        type: string
+        default: ''
+      baseDomainName:
+        description: Dominio base para generar subdominios por tenant
+        required: false
+        type: string
+        default: ''
+      hostedZoneId:
+        description: Hosted Zone ID para crear el registro en Route53 (si se usa baseDomainName)
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy tenant stack
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ inputs.awsRegion }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ inputs.awsRegion }}
+
+      - name: Deploy backend stack (CloudFormation)
+        run: |
+          aws cloudformation deploy \
+            --stack-name pocweb-backend-${{ inputs.tenantId }} \
+            --template-file cloudformation/backend.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              TenantId=${{ inputs.tenantId }} \
+              StageName=${{ inputs.stageName }} \
+              CognitoUserPoolArn=${{ inputs.cognitoUserPoolArn }} \
+              LambdaCodeS3Bucket=${{ inputs.lambdaCodeBucket }} \
+              LambdaCodeS3Key=${{ inputs.lambdaCodeKey }}
+
+      - name: Deploy frontend stack (CloudFormation)
+        run: |
+          aws cloudformation deploy \
+            --stack-name pocweb-frontend-${{ inputs.tenantId }} \
+            --template-file cloudformation/frontend.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              TenantId=${{ inputs.tenantId }} \
+              SiteBucketName=${{ inputs.frontendBucketName }} \
+              DomainName="${{ inputs.domainName }}" \
+              BaseDomainName="${{ inputs.baseDomainName }}" \
+              HostedZoneId="${{ inputs.hostedZoneId }}" \
+              AcmCertificateArn=${{ inputs.acmCertificateArn }}
+
+      - name: Registrar tenant en tabla central
+        env:
+          TENANT_ID: ${{ inputs.tenantId }}
+          BASE_DOMAIN: ${{ inputs.baseDomainName }}
+          DOMAIN_NAME: ${{ inputs.domainName }}
+          HOSTED_ZONE: ${{ inputs.hostedZoneId }}
+          STAGE_NAME: ${{ inputs.stageName }}
+        run: |
+          EFFECTIVE_DOMAIN=${DOMAIN_NAME}
+          if [ -z "$EFFECTIVE_DOMAIN" ] && [ -n "$BASE_DOMAIN" ]; then
+            EFFECTIVE_DOMAIN="$TENANT_ID.$BASE_DOMAIN"
+          fi
+
+          aws dynamodb put-item \
+            --table-name tenants \
+            --item "{\"tenantId\":{\"S\":\"$TENANT_ID\"},\"stage\":{\"S\":\"$STAGE_NAME\"},\"domain\":{\"S\":\"$EFFECTIVE_DOMAIN\"},\"hostedZoneId\":{\"S\":\"$HOSTED_ZONE\"}}" \
+            --condition-expression "attribute_not_exists(tenantId)"
+
+      - name: Mostrar URLs
+        run: |
+          API_URL=$(aws cloudformation describe-stacks --stack-name pocweb-backend-${{ inputs.tenantId }} --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
+          DISTRIBUTION_DOMAIN=$(aws cloudformation describe-stacks --stack-name pocweb-frontend-${{ inputs.tenantId }} --query "Stacks[0].Outputs[?OutputKey=='DistributionDomain'].OutputValue" --output text)
+          TENANT_DOMAIN=$(aws cloudformation describe-stacks --stack-name pocweb-frontend-${{ inputs.tenantId }} --query "Stacks[0].Outputs[?OutputKey=='TenantDomain'].OutputValue" --output text)
+          echo "API: $API_URL"
+          echo "CloudFront: $DISTRIBUTION_DOMAIN"
+          echo "Dominio del tenant: $TENANT_DOMAIN"
