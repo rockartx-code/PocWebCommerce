@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Cognito User Pool y App Client para frontend/back office con JWT.
+
+Parameters:
+  UserPoolName:
+    Type: String
+    Default: ecommerce-users
+    Description: Nombre del User Pool.
+  CallbackUrls:
+    Type: CommaDelimitedList
+    Description: URLs de callback (frontend y back office).
+  LogoutUrls:
+    Type: CommaDelimitedList
+    Description: URLs de logout.
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Ref UserPoolName
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          RequireUppercase: true
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+          AttributeDataType: String
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: web-client
+      UserPoolId: !Ref UserPool
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs: !Ref CallbackUrls
+      LogoutURLs: !Ref LogoutUrls
+      SupportedIdentityProviders: [COGNITO]
+      GenerateSecret: false
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub '${AWS::StackName}-${AWS::AccountId}'
+      UserPoolId: !Ref UserPool
+
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: admin
+      UserPoolId: !Ref UserPool
+      Description: Administradores del back office.
+
+  CustomerGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: customer
+      UserPoolId: !Ref UserPool
+      Description: Clientes finales.
+
+Outputs:
+  UserPoolId:
+    Description: ID del User Pool para JWT.
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: ID del App Client para el frontend/back office.
+    Value: !Ref UserPoolClient
+  UserPoolArn:
+    Description: ARN del User Pool para usar en el authorizer de API Gateway.
+    Value: !GetAtt UserPool.Arn

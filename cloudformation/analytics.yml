@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Recursos de observabilidad y auditoría para ventas y acceso.
+
+Parameters:
+  LogBucketName:
+    Type: String
+    Description: Bucket para logs de auditoría y accesos.
+
+Resources:
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref LogBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  SalesDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${AWS::StackName}-sales'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApiGateway", "Count", "ApiName", "${AWS::StackName}-api", {"stat": "Sum"} ],
+                  [ "AWS/ApiGateway", "5XXError", "ApiName", "${AWS::StackName}-api", {"stat": "Sum"} ],
+                  [ "AWS/Lambda", "Errors", "FunctionName", "${AWS::StackName}-ApiFunction", {"stat": "Sum"} ]
+                ],
+                "region": "${AWS::Region}",
+                "title": "Llamadas y errores API"
+              }
+            }
+          ]
+        }
+
+  ApiAlarm5xx:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Errores 5XX elevados en API Gateway.
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub '${AWS::StackName}-api'
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  LogsBucketName:
+    Description: Bucket de logs y auditoría.
+    Value: !Ref LogsBucket
+  DashboardName:
+    Description: Nombre del dashboard de ventas/operaciones.
+    Value: !Ref SalesDashboard
