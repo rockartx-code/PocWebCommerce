@@ -16,6 +16,7 @@ export interface CartItem {
 }
 
 export interface OrderPayload {
+  tenantId?: string;
   items: CartItem[];
   total: number;
   paymentPreferenceId?: string;

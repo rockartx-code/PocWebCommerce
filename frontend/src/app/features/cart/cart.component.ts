@@ -81,7 +81,8 @@ export class CartComponent implements OnInit, OnDestroy {
   }
 
   checkout() {
-    const payload = this.cart.buildOrderPayload();
-    this.preferenceId = payload.paymentPreferenceId ?? '';
+    this.cart.createOrder().subscribe((preference) => {
+      this.preferenceId = preference;
+    });
   }
 }

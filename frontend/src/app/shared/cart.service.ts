@@ -1,10 +1,20 @@
+import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
 import { Injectable } from '@angular/core';
-import { BehaviorSubject, map } from 'rxjs';
+import { BehaviorSubject, catchError, map, of } from 'rxjs';
 import { CartItem, OrderPayload, Product } from './models';
+import { API_ROUTES } from './routes';
+import { AuthService } from './auth.service';
+import { TenantContextService } from './tenant-context.service';
 
 @Injectable({ providedIn: 'root' })
 export class CartService {
   private readonly cart$ = new BehaviorSubject<CartItem[]>([]);
+
+  constructor(
+    private readonly http: HttpClient,
+    private readonly auth: AuthService,
+    private readonly tenantContext: TenantContextService
+  ) {}
 
   get items$() {
     return this.cart$.asObservable();
@@ -42,12 +52,33 @@ export class CartService {
   }
 
   buildOrderPayload(): OrderPayload {
+    const tenantId = this.resolveTenantId();
     const items = this.cart$.value;
     const total = items.reduce((sum, item) => sum + item.quantity * item.product.price, 0);
     return {
+      tenantId,
       items,
       total,
       paymentPreferenceId: `pref_${Date.now()}`
     };
+  }
+
+  createOrder() {
+    const tenantId = this.resolveTenantId();
+    const payload = this.buildOrderPayload();
+    const headers = new HttpHeaders({ ...this.auth.authorizationHeader, 'X-Tenant-Id': tenantId });
+    const params = new HttpParams().set('tenantId', tenantId);
+    return this.http.post<{ paymentPreferenceId?: string }>(API_ROUTES.orders(tenantId), payload, { headers, params }).pipe(
+      map((res) => res.paymentPreferenceId ?? payload.paymentPreferenceId ?? ''),
+      catchError(() => of(payload.paymentPreferenceId ?? ''))
+    );
+  }
+
+  private resolveTenantId(): string {
+    const tenantId = this.tenantContext.tenantId() || this.auth.tenantId;
+    if (!tenantId) {
+      throw new Error('TenantId no disponible para el carrito');
+    }
+    return tenantId;
   }
 }
