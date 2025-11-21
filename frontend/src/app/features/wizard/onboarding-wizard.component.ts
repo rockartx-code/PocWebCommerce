@@ -3,7 +3,12 @@ import { Component, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { OnboardingService, TenantCreationResponse } from '../../shared/onboarding.service';
+import {
+  OnboardingService,
+  SubscriptionCheckoutResponse,
+  TenantCreationResponse,
+  TenantUserResponse
+} from '../../shared/onboarding.service';
 import { TenantContextService } from '../../shared/tenant-context.service';
 
 interface WizardState {
@@ -11,6 +16,14 @@ interface WizardState {
   store: { name: string; industry: string; currency: string };
   payment: { provider: string; publicKey: string; accessToken: string };
   branding: { domain: string; primaryColor: string; logoUrl: string };
+  plan: { planId: string };
+}
+
+type StageKey = 'tenant' | 'admin' | 'subscription' | 'ready';
+type StageState = 'idle' | 'working' | 'done' | 'error';
+interface StageProgress {
+  state: StageState;
+  detail?: string;
 }
 
 @Component({
@@ -28,7 +41,7 @@ interface WizardState {
         <a routerLink="/" class="text-sm text-indigo-300 hover:text-indigo-200">Volver</a>
       </header>
 
-      <ol class="grid md:grid-cols-5 gap-3 text-xs text-slate-300">
+      <ol class="grid md:grid-cols-6 gap-3 text-xs text-slate-300">
         <li
           *ngFor="let step of steps; index as idx"
           class="rounded-lg border px-3 py-2"
@@ -112,6 +125,44 @@ interface WizardState {
         </div>
 
         <div *ngSwitchCase="2" class="space-y-4">
+          <h3 class="text-lg font-semibold">Plan y facturación</h3>
+          <p class="text-sm text-slate-400">Elegí el plan inicial y confirma qué preferencia se generará.</p>
+          <div class="grid md:grid-cols-2 gap-4">
+            <label
+              class="p-4 border rounded-xl space-y-2 cursor-pointer"
+              [class.border-indigo-400]="state.plan.planId === 'standard'"
+              [class.border-slate-800]="state.plan.planId !== 'standard'"
+            >
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="font-semibold">Plan Standard</p>
+                  <p class="text-xs text-slate-400">Checkout mensual, 1 usuario admin.</p>
+                </div>
+                <input type="radio" [(ngModel)]="state.plan.planId" name="planId" value="standard" />
+              </div>
+              <p class="text-sm text-indigo-200">USD 19 / mes</p>
+              <p class="text-xs text-slate-400">Incluye preferencia recurrente en Mercado Pago.</p>
+            </label>
+
+            <label
+              class="p-4 border rounded-xl space-y-2 cursor-pointer"
+              [class.border-indigo-400]="state.plan.planId === 'growth'"
+              [class.border-slate-800]="state.plan.planId !== 'growth'"
+            >
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="font-semibold">Plan Growth</p>
+                  <p class="text-xs text-slate-400">Incluye entornos sandbox y seats extra.</p>
+                </div>
+                <input type="radio" [(ngModel)]="state.plan.planId" name="planId" value="growth" />
+              </div>
+              <p class="text-sm text-indigo-200">USD 49 / mes</p>
+              <p class="text-xs text-slate-400">Checkout de suscripción avanzada y soporte prioritario.</p>
+            </label>
+          </div>
+        </div>
+
+        <div *ngSwitchCase="3" class="space-y-4">
           <h3 class="text-lg font-semibold">Pago con Mercado Pago</h3>
           <p class="text-sm text-slate-400">Conecta claves para preferencias y webhooks.</p>
           <div class="grid md:grid-cols-2 gap-4">
@@ -136,7 +187,7 @@ interface WizardState {
           </div>
         </div>
 
-        <div *ngSwitchCase="3" class="space-y-4">
+        <div *ngSwitchCase="4" class="space-y-4">
           <h3 class="text-lg font-semibold">Dominio y branding</h3>
           <p class="text-sm text-slate-400">Asignamos subdominio, color primario y logo CDN.</p>
           <div class="grid md:grid-cols-3 gap-4">
@@ -165,10 +216,10 @@ interface WizardState {
           </div>
         </div>
 
-        <div *ngSwitchCase="4" class="space-y-4">
+        <div *ngSwitchCase="5" class="space-y-6">
           <h3 class="text-lg font-semibold">Resumen</h3>
           <p class="text-sm text-slate-400">Verificá todo antes de crear el tenant.</p>
-          <div class="grid md:grid-cols-2 gap-4 text-sm">
+          <div class="grid md:grid-cols-3 gap-4 text-sm">
             <div class="p-4 border border-slate-800 rounded-xl bg-slate-950/50 space-y-2">
               <h4 class="font-semibold text-indigo-200">Cuenta y tienda</h4>
               <p><strong>Email:</strong> {{ state.account.adminEmail || 'pendiente' }}</p>
@@ -185,11 +236,88 @@ interface WizardState {
               </p>
               <p><strong>Logo:</strong> {{ state.branding.logoUrl || 'se usará placeholder' }}</p>
             </div>
+            <div class="p-4 border border-slate-800 rounded-xl bg-slate-950/50 space-y-2">
+              <h4 class="font-semibold text-indigo-200">Plan y checkout</h4>
+              <p><strong>Plan:</strong> {{ state.plan.planId | titlecase }}</p>
+              <p *ngIf="subscriptionCheckout"><strong>PreferenceId:</strong> {{ subscriptionCheckout.checkoutPreference.id }}</p>
+              <p class="text-xs text-slate-400">
+                POST /v1/{{ result?.tenant.tenantId || '{tenantId}' }}/subscriptions/checkout se invocará al lanzar.
+              </p>
+            </div>
           </div>
           <div *ngIf="result" class="p-4 border border-indigo-500/40 rounded-xl bg-indigo-500/10 text-sm text-indigo-100 space-y-1">
             <p class="font-semibold">Tenant creado</p>
             <p>TenantId: {{ result.tenant.tenantId }} | Backoffice: {{ result.urls.backoffice }}</p>
             <p>Admin: {{ result.adminUser.email }} / pass: {{ result.adminUser.temporaryPassword }}</p>
+          </div>
+          <div *ngIf="adminCreation" class="p-4 border border-emerald-500/40 rounded-xl bg-emerald-500/5 text-sm text-emerald-100 space-y-1">
+            <p class="font-semibold">Invitación admin enviada</p>
+            <p>Usuario: {{ adminCreation.user.email }} ({{ adminCreation.user.status }})</p>
+            <p>Login: <a class="underline" [href]="adminCreation.loginUrl" target="_blank">{{ adminCreation.loginUrl }}</a></p>
+          </div>
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="space-y-3">
+              <h4 class="font-semibold text-indigo-200">Estado y fallbacks</h4>
+              <div
+                *ngFor="let stage of lifecycleStages"
+                class="p-3 border rounded-lg"
+                [class.border-emerald-500]="progress()[stage.key].state === 'done'"
+                [class.border-amber-500]="progress()[stage.key].state === 'working'"
+                [class.border-rose-500]="progress()[stage.key].state === 'error'"
+                [class.border-slate-800]="progress()[stage.key].state === 'idle'"
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <div>
+                    <p class="font-semibold text-white">{{ stage.label }}</p>
+                    <p class="text-xs text-slate-400">{{ progress()[stage.key].detail || 'Pendiente de ejecución' }}</p>
+                  </div>
+                  <span
+                    class="text-xs px-2 py-1 rounded-full"
+                    [class.bg-emerald-500/20]="progress()[stage.key].state === 'done'"
+                    [class.text-emerald-200]="progress()[stage.key].state === 'done'"
+                    [class.bg-amber-500/20]="progress()[stage.key].state === 'working'"
+                    [class.text-amber-100]="progress()[stage.key].state === 'working'"
+                    [class.bg-rose-500/20]="progress()[stage.key].state === 'error'"
+                    [class.text-rose-100]="progress()[stage.key].state === 'error'"
+                    [class.bg-slate-800]="progress()[stage.key].state === 'idle'"
+                  >
+                    {{
+                      progress()[stage.key].state === 'done'
+                        ? 'Listo'
+                        : progress()[stage.key].state === 'working'
+                          ? 'En progreso'
+                          : progress()[stage.key].state === 'error'
+                            ? 'Error'
+                            : 'Pendiente'
+                    }}
+                  </span>
+                </div>
+                <p class="text-xs text-slate-400 mt-1">Fallback: {{ stage.fallback }}</p>
+              </div>
+            </div>
+            <div class="space-y-3 text-sm">
+              <h4 class="font-semibold text-indigo-200">Accesos directos</h4>
+              <p *ngIf="backofficeUrl">
+                <strong>Backoffice listo:</strong>
+                <a class="text-indigo-300 underline" [href]="backofficeUrl" target="_blank">{{ backofficeUrl }}</a>
+              </p>
+              <p *ngIf="storefrontUrl">
+                <strong>Storefront CloudFormation:</strong>
+                <a class="text-indigo-300 underline" [href]="storefrontUrl" target="_blank">{{ storefrontUrl }}</a>
+              </p>
+              <p *ngIf="subscriptionCheckout">
+                <strong>PreferenceId pago:</strong> {{ subscriptionCheckout.checkoutPreference.id }}
+                <br />
+                <span class="text-xs text-slate-400">
+                  URL fallback: <a
+                    class="underline"
+                    [href]="'https://www.mercadopago.com/checkout/v1/redirect?pref_id=' + subscriptionCheckout.checkoutPreference.id"
+                    target="_blank"
+                    >Abrir checkout</a
+                  >
+                </span>
+              </p>
+            </div>
           </div>
           <div *ngIf="error" class="text-sm text-red-400">{{ error }}</div>
         </div>
@@ -226,17 +354,46 @@ interface WizardState {
   `
 })
 export class OnboardingWizardComponent {
-  steps = ['Cuenta', 'Datos de tienda', 'Método de pago (MP)', 'Dominio y branding', 'Resumen'];
+  steps = ['Cuenta', 'Datos de tienda', 'Plan y facturación', 'Método de pago (MP)', 'Dominio y branding', 'Resumen'];
   currentStep = signal(0);
   submitting = false;
   error: string | null = null;
   result: TenantCreationResponse | null = null;
+  adminCreation: TenantUserResponse | null = null;
+  subscriptionCheckout: SubscriptionCheckoutResponse | null = null;
+
+  lifecycleStages: { key: StageKey; label: string; fallback: string }[] = [
+    { key: 'tenant', label: 'Tenant creado (POST /v1/tenants)', fallback: 'Reintenta la creación con los mismos datos' },
+    {
+      key: 'admin',
+      label: 'Usuario administrador (POST /v1/tenants/{tenantId}/users)',
+      fallback: 'Reenvía la invitación o genera un password temporal'
+    },
+    {
+      key: 'subscription',
+      label: 'Checkout de suscripción (POST /v1/{tenantId}/subscriptions/checkout)',
+      fallback: 'Genera manualmente la preferencia en Mercado Pago usando el preferenceId'
+    },
+    {
+      key: 'ready',
+      label: 'Backoffice listo y dominios CloudFormation',
+      fallback: 'Usa la URL directa del backoffice o el subdominio generado'
+    }
+  ];
+
+  progress = signal<Record<StageKey, StageProgress>>({
+    tenant: { state: 'idle' },
+    admin: { state: 'idle' },
+    subscription: { state: 'idle' },
+    ready: { state: 'idle' }
+  });
 
   state: WizardState = {
     account: { adminEmail: '', displayName: '', password: '' },
     store: { name: '', industry: '', currency: 'USD' },
     payment: { provider: 'mercadopago', publicKey: '', accessToken: '' },
-    branding: { domain: '', primaryColor: '#6366f1', logoUrl: '' }
+    branding: { domain: '', primaryColor: '#6366f1', logoUrl: '' },
+    plan: { planId: 'standard' }
   };
 
   constructor(
@@ -262,17 +419,41 @@ export class OnboardingWizardComponent {
       case 1:
         return !!this.state.store.name && !!this.state.store.industry;
       case 2:
-        return !!this.state.payment.publicKey && !!this.state.payment.accessToken;
+        return !!this.state.plan.planId;
       case 3:
+        return !!this.state.payment.publicKey && !!this.state.payment.accessToken;
+      case 4:
         return !!this.state.branding.domain;
       default:
         return true;
     }
   }
 
+  get backofficeUrl() {
+    return this.result?.urls.backoffice || null;
+  }
+
+  get storefrontUrl() {
+    return this.result?.urls.storefront || (this.state.branding.domain ? `https://${this.state.branding.domain}` : null);
+  }
+
+  private updateStage(key: StageKey, state: StageState, detail?: string) {
+    const next = { ...this.progress() };
+    next[key] = { state, detail };
+    this.progress.set(next);
+  }
+
   async completeOnboarding() {
     this.submitting = true;
     this.error = null;
+    this.adminCreation = null;
+    this.subscriptionCheckout = null;
+    this.progress.set({
+      tenant: { state: 'working', detail: 'Invocando /v1/tenants...' },
+      admin: { state: 'idle' },
+      subscription: { state: 'idle' },
+      ready: { state: 'idle' }
+    });
     try {
       const tenantPayload = {
         name: this.state.store.name,
@@ -292,7 +473,9 @@ export class OnboardingWizardComponent {
       };
 
       const tenant = await firstValueFrom(this.onboarding.createTenant(tenantPayload));
-      await firstValueFrom(
+      this.updateStage('tenant', 'done', `TenantId: ${tenant.tenant.tenantId}`);
+      this.progress.set({ ...this.progress(), admin: { state: 'working', detail: 'Creando usuario admin...' } });
+      this.adminCreation = await firstValueFrom(
         this.onboarding.createTenantUser(tenant.tenant.tenantId, {
           email: this.state.account.adminEmail,
           role: 'admin',
@@ -300,11 +483,22 @@ export class OnboardingWizardComponent {
           displayName: this.state.account.displayName || 'Owner'
         })
       );
+      this.updateStage('admin', 'done', 'Admin invitado y password temporal generado');
+      this.progress.set({ ...this.progress(), subscription: { state: 'working', detail: 'Generando preferencia de pago...' } });
+      this.subscriptionCheckout = await firstValueFrom(
+        this.onboarding.createSubscriptionCheckout(tenant.tenant.tenantId, { planId: this.state.plan.planId })
+      );
+      this.updateStage('subscription', 'done', `PreferenceId: ${this.subscriptionCheckout.checkoutPreference.id}`);
       this.result = tenant;
       this.tenantContext.setTenantId(tenant.tenant.tenantId);
+      this.updateStage('ready', 'done', 'Backoffice disponible y dominios asignados');
       await this.router.navigate(['/admin'], { queryParams: { tenantId: tenant.tenant.tenantId } });
     } catch (err) {
       this.error = 'No pudimos crear el tenant. Intenta nuevamente.';
+      const failingStage = Object.entries(this.progress()).find(([, value]) => value.state === 'working');
+      if (failingStage) {
+        this.updateStage(failingStage[0] as StageKey, 'error', (err as Error)?.message || 'Error desconocido');
+      }
       console.error(err);
     } finally {
       this.submitting = false;

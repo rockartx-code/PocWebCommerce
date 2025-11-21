@@ -1,6 +1,7 @@
 export const API_ROUTES = {
   tenants: '/v1/tenants',
   tenantUsers: (tenantId: string) => `/v1/tenants/${tenantId}/users`,
+  subscriptionCheckout: (tenantId: string) => `/v1/${tenantId}/subscriptions/checkout`,
   products: (tenantId: string) => `/v1/${tenantId}/products`,
   productById: (tenantId: string, id: string) => `/v1/${tenantId}/products/${id}`,
   cart: (tenantId: string) => `/v1/${tenantId}/cart`,
