@@ -37,6 +37,32 @@ Esta solución implementa una aplicación web de comercio electrónico completam
   - User Pool y App Client con OAuth2/OpenID; grupos `admin` y `customer`.
   - API Gateway Authorizer JWT; políticas IAM para limitar operaciones críticas a admins.
 
+## Estructura de Base de Datos (DynamoDB)
+- **Productos (`<stack>-products`)**
+  - **PK**: `productId` (S).
+  - **GSI `CategoryIndex`**: `category` (PK) + `status` (SK) para listar catálogos por categoría/visibilidad.
+  - **GSI `SlugIndex`**: `slug` (PK) para búsquedas rápidas por URL amigable.
+  - **Atributos sugeridos**: `name`, `description`, `price`, `currency`, `stock`, `images[]`, `tags[]`, `createdAt`, `updatedAt`.
+
+- **Órdenes (`<stack>-orders`)**
+  - **PK**: `orderId` (S) con stream habilitado para integración con analytics.
+  - **GSI `OrdersByUser`**: `userId` (PK) + `createdAt` (SK) para el historial del cliente.
+  - **GSI `OrdersByStatus`**: `status` (PK) + `updatedAt` (SK) para tableros operativos.
+  - **Atributos sugeridos**: `items[]` (producto, cantidad, precio), `amount`, `currency`, `shipping`, `paymentPreferenceId`, `paymentStatus`, `userEmail`, `metadata`.
+
+- **Carritos (`<stack>-carts`)**
+  - **PK**: `cartId` (S) con atributo `ttl` para expiración automática.
+  - **GSI `UserCartIndex`**: `userId` (PK) + `createdAt` (SK) para recuperar el carrito activo del usuario.
+  - **Atributos sugeridos**: `items[]`, `totals`, `promoCode`, `expiresAt`, `channel` (web/app).
+
+- **Transacciones de pago (`<stack>-transactions`)**
+  - **PK**: `transactionId` (S) alineado con el `payment_id` de Mercado Pago.
+  - **GSI `TransactionsByOrder`**: `orderId` (PK) + `createdAt` (SK) para conciliar pagos por orden.
+  - **GSI `TransactionsByStatus`**: `status` (PK) + `createdAt` (SK) para monitorear fallas/aprobaciones recientes.
+  - **Atributos sugeridos**: `orderId`, `preferenceId`, `status`, `statusDetail`, `amount`, `currency`, `payer`, `notifications[]`, `rawPayload`.
+
+Estas tablas cubren catálogo, carrito, ordenes y conciliación de pagos; permiten consultas por categoría, estado u usuario, soportan dashboards operativos y facilitan la depuración de integraciones con Mercado Pago.
+
 ## Flujo de Despliegue
 1. Construir el frontend (`ng build --configuration production`) y publicar el artefacto en el bucket S3 del frontend.
 2. Empaquetar funciones Lambda en artefactos ZIP y subirlos a un bucket de artefactos.
