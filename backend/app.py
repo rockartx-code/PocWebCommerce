@@ -46,12 +46,21 @@ def parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
 def extract_claims(event: Dict[str, Any]) -> Dict[str, Any]:
     request_context = event.get("requestContext") or {}
     authorizer = request_context.get("authorizer") or {}
-    return authorizer.get("claims") or {}
+    claims = authorizer.get("claims") or {}
+    if claims:
+        return claims
+    jwt_context = authorizer.get("jwt") or {}
+    return jwt_context.get("claims") or {}
 
 
 def is_super_admin(event: Dict[str, Any]) -> bool:
     claims = extract_claims(event)
-    role_claim = claims.get("role") or claims.get("custom:role") or claims.get("cognito:groups")
+    role_claim = (
+        claims.get("role")
+        or claims.get("custom:role")
+        or claims.get("roles")
+        or claims.get("cognito:groups")
+    )
     if not role_claim:
         return False
     if isinstance(role_claim, str):
@@ -495,26 +504,38 @@ def list_tenant_usage(event: Dict[str, Any], _: Dict[str, str]) -> LambdaRespons
 
 def extract_tenant_id(event: Dict[str, Any]) -> str | None:
     authorizer = (event.get("requestContext") or {}).get("authorizer") or {}
-    claims = authorizer.get("claims") or {}
-    tenant_id = claims.get("custom:tenantId") or claims.get("tenantId")
+    claims = authorizer.get("claims") or (authorizer.get("jwt") or {}).get("claims") or {}
+    tenant_id = (
+        claims.get("custom:tenantId")
+        or claims.get("tenantId")
+        or claims.get("tenant_id")
+        or claims.get("tenant")
+    )
     if not tenant_id:
         return None
     return str(tenant_id)
 
 
-def inject_tenant(event: Dict[str, Any], params: Dict[str, str]) -> Tuple[str | None, Dict[str, Any], Dict[str, str], str | None]:
+def inject_tenant(
+    event: Dict[str, Any], params: Dict[str, str], *, allow_cross_tenant: bool = False
+) -> Tuple[str | None, Dict[str, Any], Dict[str, str], str | None]:
     tenant_id = extract_tenant_id(event)
-    if not tenant_id:
-        return None, event, params, None
     path_tenant = (
         params.get("tenantId")
         or (event.get("pathParameters") or {}).get("tenantId")
         or (event.get("queryStringParameters") or {}).get("tenantId")
         or (event.get("headers") or {}).get("x-tenant-id")
     )
-    event_with_tenant = {**event, "tenantId": tenant_id}
-    params_with_tenant = {**params, "tenantId": tenant_id}
-    return tenant_id, event_with_tenant, params_with_tenant, path_tenant
+
+    resolved_tenant = tenant_id
+    if path_tenant and (allow_cross_tenant or not resolved_tenant):
+        resolved_tenant = path_tenant
+
+    event_with_tenant = {**event, "tenantId": resolved_tenant}
+    params_with_tenant = {**params}
+    if resolved_tenant:
+        params_with_tenant["tenantId"] = resolved_tenant
+    return resolved_tenant, event_with_tenant, params_with_tenant, path_tenant
 
 
 ROUTES: Iterable[Route] = (
@@ -551,10 +572,13 @@ def route_event(event: Dict[str, Any]) -> Dict[str, Any]:
             continue
         params = match.groupdict()
         if requires_tenant:
-            tenant_id, event, params, path_tenant = inject_tenant(event, params)
+            is_super = is_super_admin(event)
+            tenant_id, event, params, path_tenant = inject_tenant(
+                event, params, allow_cross_tenant=is_super
+            )
             if not tenant_id:
                 return build_response(401, {"message": "Missing tenantId claim"})
-            if path_tenant and path_tenant != tenant_id:
+            if path_tenant and path_tenant != tenant_id and not is_super:
                 return build_response(403, {"message": "Tenant mismatch"})
         status_code, payload, headers = handler(event, params)
         return build_response(status_code, payload, headers)
